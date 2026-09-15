@@ -1,2 +1,25 @@
-// Package limiter contains the rate limiter engine and algorithms.
 package limiter
+
+import (
+	"time"
+
+	rate "rate-limiter/internal/storage"
+)
+
+type Policy struct {
+	Limit  int
+	Window time.Duration
+}
+
+type Result struct {
+	Allowed    bool
+	Remaining  int
+	RetryAfter time.Duration
+	ResetTime  time.Time
+}
+
+type Storage = rate.Storage
+
+type RateLimiter interface {
+	Check(identity string, policy Policy) (Result, error)
+}
