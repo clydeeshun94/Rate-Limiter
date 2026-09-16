@@ -8,7 +8,7 @@ import (
 )
 
 func TestSlidingWindowLog_AllowsWithinLimit(t *testing.T) {
-	l := limiter.NewSlidingWindowLog()
+	l := limiter.NewSlidingWindowLogWithLimit(3)
 	policy := limiter.Policy{Limit: 3, Window: 60 * time.Second}
 
 	for i := 0; i < 3; i++ {
@@ -23,7 +23,7 @@ func TestSlidingWindowLog_AllowsWithinLimit(t *testing.T) {
 }
 
 func TestSlidingWindowLog_DeniesOverLimit(t *testing.T) {
-	l := limiter.NewSlidingWindowLog()
+	l := limiter.NewSlidingWindowLogWithLimit(3)
 	policy := limiter.Policy{Limit: 3, Window: 60 * time.Second}
 
 	for i := 0; i < 3; i++ {
@@ -40,7 +40,7 @@ func TestSlidingWindowLog_DeniesOverLimit(t *testing.T) {
 }
 
 func TestSlidingWindowLog_EvictsOldTimestamps(t *testing.T) {
-	l := limiter.NewSlidingWindowLog()
+	l := limiter.NewSlidingWindowLogWithLimit(3)
 	policy := limiter.Policy{Limit: 3, Window: 2 * time.Second}
 
 	for i := 0; i < 3; i++ {

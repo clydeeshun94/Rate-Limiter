@@ -6,14 +6,22 @@ import (
 )
 
 type SlidingWindowLog struct {
-	mu   sync.Mutex
-	logs map[string][]int64
+	limit int
+	mu    sync.Mutex
+	logs  map[string][]int64
 }
 
-func NewSlidingWindowLog() *SlidingWindowLog {
+func NewSlidingWindowLogWithLimit(limit int) *SlidingWindowLog {
 	return &SlidingWindowLog{
-		logs: make(map[string][]int64),
+		limit: limit,
+		logs:  make(map[string][]int64),
 	}
+}
+
+func (swl *SlidingWindowLog) SetLimit(limit int) {
+	swl.mu.Lock()
+	defer swl.mu.Unlock()
+	swl.limit = limit
 }
 
 func (swl *SlidingWindowLog) Check(identity string, policy Policy) (Result, error) {
@@ -33,7 +41,7 @@ func (swl *SlidingWindowLog) Check(identity string, policy Policy) (Result, erro
 	}
 	swl.logs[identity] = valid
 
-	if len(valid) >= policy.Limit {
+	if len(valid) >= swl.limit {
 		oldest := valid[0]
 		retryAfter := time.Duration(oldest+windowSeconds-now) * time.Second
 		if retryAfter < 0 {
@@ -41,9 +49,9 @@ func (swl *SlidingWindowLog) Check(identity string, policy Policy) (Result, erro
 		}
 		return Result{
 			Allowed:    false,
-			Remaining:  policy.Limit - len(valid),
+			Remaining:  swl.limit - len(valid),
 			RetryAfter: retryAfter,
-			ResetTime:  time.Unix(oldest + windowSeconds, 0),
+			ResetTime:  time.Unix(oldest+windowSeconds, 0),
 		}, nil
 	}
 
@@ -51,8 +59,8 @@ func (swl *SlidingWindowLog) Check(identity string, policy Policy) (Result, erro
 
 	return Result{
 		Allowed:    true,
-		Remaining:  policy.Limit - len(swl.logs[identity]),
+		Remaining:  swl.limit - len(swl.logs[identity]),
 		RetryAfter: 0,
-		ResetTime:  time.Unix(now + windowSeconds, 0),
+		ResetTime:  time.Unix(now+windowSeconds, 0),
 	}, nil
 }

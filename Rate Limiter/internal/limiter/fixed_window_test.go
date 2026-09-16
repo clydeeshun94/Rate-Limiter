@@ -10,7 +10,7 @@ import (
 
 func TestFixedWindow_AllowsWithinLimit(t *testing.T) {
 	storage := rate.NewMemoryStorage()
-	l := limiter.NewFixedWindow(storage)
+	l := limiter.NewFixedWindowWithLimit(storage, 3)
 	policy := limiter.Policy{Limit: 3, Window: 60 * time.Second}
 
 	for i := 0; i < 3; i++ {
@@ -26,7 +26,7 @@ func TestFixedWindow_AllowsWithinLimit(t *testing.T) {
 
 func TestFixedWindow_DeniesOverLimit(t *testing.T) {
 	storage := rate.NewMemoryStorage()
-	l := limiter.NewFixedWindow(storage)
+	l := limiter.NewFixedWindowWithLimit(storage, 3)
 	policy := limiter.Policy{Limit: 3, Window: 60 * time.Second}
 
 	for i := 0; i < 3; i++ {

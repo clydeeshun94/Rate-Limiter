@@ -9,17 +9,24 @@ import (
 
 type LeakyBucket struct {
 	storage   rate.Storage
-	mu        sync.Mutex
+	limit     int
 	water     int
 	lastLeak  int64
+	mu        sync.Mutex
 }
 
-func NewLeakyBucket(storage rate.Storage) *LeakyBucket {
+func NewLeakyBucketWithLimit(storage rate.Storage, limit int) *LeakyBucket {
 	return &LeakyBucket{
-		storage:  storage,
-		water:    0,
-		lastLeak: time.Now().Unix(),
+		storage: storage,
+		limit:   limit,
+		water:   0,
 	}
+}
+
+func (lb *LeakyBucket) SetLimit(limit int) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	lb.limit = limit
 }
 
 func (lb *LeakyBucket) Check(identity string, policy Policy) (Result, error) {
@@ -41,14 +48,14 @@ func (lb *LeakyBucket) Check(identity string, policy Policy) (Result, error) {
 		}
 	}
 
-	if lb.water+1 > policy.Limit {
-		retryAfter := time.Duration(float64(time.Second) * (float64(lb.water+1-policy.Limit) / leakRate))
+	if lb.water+1 > lb.limit {
+		retryAfter := time.Duration(float64(time.Second) * (float64(lb.water+1-lb.limit) / leakRate))
 		if retryAfter < 0 {
 			retryAfter = 0
 		}
 		return Result{
 			Allowed:    false,
-			Remaining:  policy.Limit - lb.water,
+			Remaining:  lb.limit - lb.water,
 			RetryAfter: retryAfter,
 			ResetTime:  time.Now().Add(retryAfter),
 		}, nil
@@ -59,7 +66,7 @@ func (lb *LeakyBucket) Check(identity string, policy Policy) (Result, error) {
 
 	return Result{
 		Allowed:    true,
-		Remaining:  policy.Limit - lb.water,
+		Remaining:  lb.limit - lb.water,
 		RetryAfter: 0,
 		ResetTime:  time.Now().Add(time.Duration(windowSeconds) * time.Second),
 	}, nil

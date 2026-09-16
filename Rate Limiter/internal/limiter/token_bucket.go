@@ -9,17 +9,24 @@ import (
 
 type TokenBucket struct {
 	storage    rate.Storage
-	mu         sync.Mutex
+	limit      int
 	tokens     int
 	lastRefill int64
+	mu         sync.Mutex
 }
 
-func NewTokenBucket(storage rate.Storage) *TokenBucket {
+func NewTokenBucketWithLimit(storage rate.Storage, limit int) *TokenBucket {
 	return &TokenBucket{
-		storage:    storage,
-		tokens:     0,
-		lastRefill: time.Now().Unix(),
+		storage: storage,
+		limit:   limit,
+		tokens:  limit,
 	}
+}
+
+func (tb *TokenBucket) SetLimit(limit int) {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	tb.limit = limit
 }
 
 func (tb *TokenBucket) Check(identity string, policy Policy) (Result, error) {
@@ -28,7 +35,7 @@ func (tb *TokenBucket) Check(identity string, policy Policy) (Result, error) {
 
 	now := time.Now().Unix()
 	windowSeconds := int64(policy.Window.Seconds())
-	refillRate := float64(policy.Limit) / float64(windowSeconds)
+	refillRate := float64(tb.limit) / float64(windowSeconds)
 
 	key := identity
 	record, exists := tb.storage.Get(key)
@@ -36,11 +43,11 @@ func (tb *TokenBucket) Check(identity string, policy Policy) (Result, error) {
 	if exists && record.WindowStart != 0 {
 		elapsed := float64(now - record.WindowStart)
 		tb.tokens += int(refillRate * elapsed)
-		if tb.tokens > policy.Limit {
-			tb.tokens = policy.Limit
+		if tb.tokens > tb.limit {
+			tb.tokens = tb.limit
 		}
 	} else if !exists {
-		tb.tokens = policy.Limit
+		tb.tokens = tb.limit
 	}
 
 	tb.tokens--

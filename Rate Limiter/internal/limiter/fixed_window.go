@@ -9,13 +9,21 @@ import (
 
 type FixedWindow struct {
 	storage rate.Storage
+	limit   int
 	mu      sync.Mutex
 }
 
-func NewFixedWindow(storage rate.Storage) *FixedWindow {
+func NewFixedWindowWithLimit(storage rate.Storage, limit int) *FixedWindow {
 	return &FixedWindow{
 		storage: storage,
+		limit:   limit,
 	}
+}
+
+func (fw *FixedWindow) SetLimit(limit int) {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+	fw.limit = limit
 }
 
 func (fw *FixedWindow) Check(identity string, policy Policy) (Result, error) {
@@ -35,7 +43,7 @@ func (fw *FixedWindow) Check(identity string, policy Policy) (Result, error) {
 		}
 	}
 
-	if record.Count >= policy.Limit {
+	if record.Count >= fw.limit {
 		resetTime := time.Unix(windowStart+int64(policy.Window.Seconds()), 0)
 		retryAfter := time.Until(resetTime)
 		if retryAfter < 0 {
@@ -56,7 +64,7 @@ func (fw *FixedWindow) Check(identity string, policy Policy) (Result, error) {
 
 	return Result{
 		Allowed:    true,
-		Remaining:  policy.Limit - record.Count,
+		Remaining:  fw.limit - record.Count,
 		RetryAfter: 0,
 		ResetTime:  resetTime,
 	}, nil
