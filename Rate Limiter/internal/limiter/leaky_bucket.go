@@ -55,6 +55,7 @@ func (lb *LeakyBucket) Check(identity string, policy Policy) (Result, error) {
 		}
 		return Result{
 			Allowed:    false,
+			Limit:      lb.limit,
 			Remaining:  lb.limit - lb.water,
 			RetryAfter: retryAfter,
 			ResetTime:  time.Now().Add(retryAfter),
@@ -66,6 +67,7 @@ func (lb *LeakyBucket) Check(identity string, policy Policy) (Result, error) {
 
 	return Result{
 		Allowed:    true,
+		Limit:      lb.limit,
 		Remaining:  lb.limit - lb.water,
 		RetryAfter: 0,
 		ResetTime:  time.Now().Add(time.Duration(windowSeconds) * time.Second),

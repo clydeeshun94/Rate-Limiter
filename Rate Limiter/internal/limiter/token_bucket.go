@@ -57,6 +57,7 @@ func (tb *TokenBucket) Check(identity string, policy Policy) (Result, error) {
 		resetTime := time.Now().Add(retryAfter)
 		return Result{
 			Allowed:    false,
+			Limit:      tb.limit,
 			Remaining:  0,
 			RetryAfter: retryAfter,
 			ResetTime:  resetTime,
@@ -67,6 +68,7 @@ func (tb *TokenBucket) Check(identity string, policy Policy) (Result, error) {
 
 	return Result{
 		Allowed:    true,
+		Limit:      tb.limit,
 		Remaining:  tb.tokens,
 		RetryAfter: 0,
 		ResetTime:  time.Now().Add(time.Duration(windowSeconds) * time.Second),

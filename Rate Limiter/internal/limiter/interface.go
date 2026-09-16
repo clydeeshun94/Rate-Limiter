@@ -13,6 +13,7 @@ type Policy struct {
 
 type Result struct {
 	Allowed    bool
+	Limit      int
 	Remaining  int
 	RetryAfter time.Duration
 	ResetTime  time.Time

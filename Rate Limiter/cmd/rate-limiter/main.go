@@ -26,6 +26,7 @@ type checkRequest struct {
 
 type checkResponse struct {
 	Allowed    bool          `json:"allowed"`
+	Limit      int           `json:"limit"`
 	Remaining  int           `json:"remaining"`
 	RetryAfter time.Duration `json:"retry_after"`
 	ResetTime  string        `json:"reset_time"`
@@ -96,12 +97,20 @@ func (s *service) handleCheck(w http.ResponseWriter, r *http.Request) {
 
 	resp := checkResponse{
 		Allowed:    result.Allowed,
+		Limit:      result.Limit,
 		Remaining:  result.Remaining,
 		RetryAfter: result.RetryAfter,
 		ResetTime:  result.ResetTime.Format(time.RFC3339),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(result.Limit))
+	w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(result.Remaining))
+	w.Header().Set("X-RateLimit-Reset", result.ResetTime.Format(time.RFC3339))
+	if result.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.FormatInt(int64(result.RetryAfter.Seconds()), 10))
+	}
+
 	json.NewEncoder(w).Encode(resp)
 }
 

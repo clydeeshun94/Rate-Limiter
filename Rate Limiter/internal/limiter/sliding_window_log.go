@@ -56,6 +56,7 @@ func (swl *SlidingWindowLog) Check(identity string, policy Policy) (Result, erro
 		}
 		return Result{
 			Allowed:    false,
+			Limit:      swl.limit,
 			Remaining:  swl.limit - len(valid),
 			RetryAfter: retryAfter,
 			ResetTime:  time.Unix(oldest+windowSeconds, 0),
@@ -70,6 +71,7 @@ func (swl *SlidingWindowLog) Check(identity string, policy Policy) (Result, erro
 
 	return Result{
 		Allowed:    true,
+		Limit:      swl.limit,
 		Remaining:  swl.limit - len(valid),
 		RetryAfter: 0,
 		ResetTime:  time.Unix(now+windowSeconds, 0),
