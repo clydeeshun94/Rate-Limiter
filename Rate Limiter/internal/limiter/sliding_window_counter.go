@@ -62,6 +62,7 @@ func (sw *SlidingWindowCounter) Check(identity string, policy Policy) (Result, e
 		}
 		return Result{
 			Allowed:    false,
+			Limit:      sw.limit,
 			Remaining:  sw.limit - currentCount,
 			RetryAfter: retryAfter,
 			ResetTime:  resetTime,
@@ -74,6 +75,7 @@ func (sw *SlidingWindowCounter) Check(identity string, policy Policy) (Result, e
 	resetTime := time.Unix(windowStart+windowSeconds, 0)
 	return Result{
 		Allowed:    true,
+		Limit:      sw.limit,
 		Remaining:  sw.limit - currentCount,
 		RetryAfter: 0,
 		ResetTime:  resetTime,

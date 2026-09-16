@@ -51,6 +51,7 @@ func (fw *FixedWindow) Check(identity string, policy Policy) (Result, error) {
 		}
 		return Result{
 			Allowed:    false,
+			Limit:      fw.limit,
 			Remaining:  record.Count,
 			RetryAfter: retryAfter,
 			ResetTime:  resetTime,
@@ -64,6 +65,7 @@ func (fw *FixedWindow) Check(identity string, policy Policy) (Result, error) {
 
 	return Result{
 		Allowed:    true,
+		Limit:      fw.limit,
 		Remaining:  fw.limit - record.Count,
 		RetryAfter: 0,
 		ResetTime:  resetTime,
