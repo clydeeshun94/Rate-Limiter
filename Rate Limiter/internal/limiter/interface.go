@@ -23,3 +23,7 @@ type Storage = rate.Storage
 type RateLimiter interface {
 	Check(identity string, policy Policy) (Result, error)
 }
+
+type LimitSetter interface {
+	SetLimit(limit int)
+}
