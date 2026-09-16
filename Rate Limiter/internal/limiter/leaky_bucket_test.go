@@ -10,7 +10,7 @@ import (
 
 func TestLeakyBucket_AllowsWithinLimit(t *testing.T) {
 	storage := rate.NewMemoryStorage()
-	l := limiter.NewLeakyBucket(storage)
+	l := limiter.NewLeakyBucketWithLimit(storage, 3)
 	policy := limiter.Policy{Limit: 3, Window: 60 * time.Second}
 
 	for i := 0; i < 3; i++ {
@@ -26,7 +26,7 @@ func TestLeakyBucket_AllowsWithinLimit(t *testing.T) {
 
 func TestLeakyBucket_DeniesOverLimit(t *testing.T) {
 	storage := rate.NewMemoryStorage()
-	l := limiter.NewLeakyBucket(storage)
+	l := limiter.NewLeakyBucketWithLimit(storage, 2)
 	policy := limiter.Policy{Limit: 2, Window: 60 * time.Second}
 
 	for i := 0; i < 2; i++ {
@@ -44,7 +44,7 @@ func TestLeakyBucket_DeniesOverLimit(t *testing.T) {
 
 func TestLeakyBucket_DrainsOverTime(t *testing.T) {
 	storage := rate.NewMemoryStorage()
-	l := limiter.NewLeakyBucket(storage)
+	l := limiter.NewLeakyBucketWithLimit(storage, 2)
 	policy := limiter.Policy{Limit: 2, Window: 2 * time.Second}
 
 	l.Check("bob", policy)

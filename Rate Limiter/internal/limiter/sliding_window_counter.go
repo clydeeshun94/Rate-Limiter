@@ -9,13 +9,21 @@ import (
 
 type SlidingWindowCounter struct {
 	storage rate.Storage
+	limit   int
 	mu      sync.Mutex
 }
 
-func NewSlidingWindowCounter(storage rate.Storage) *SlidingWindowCounter {
+func NewSlidingWindowCounterWithLimit(storage rate.Storage, limit int) *SlidingWindowCounter {
 	return &SlidingWindowCounter{
 		storage: storage,
+		limit:   limit,
 	}
+}
+
+func (sw *SlidingWindowCounter) SetLimit(limit int) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	sw.limit = limit
 }
 
 func (sw *SlidingWindowCounter) Check(identity string, policy Policy) (Result, error) {
@@ -46,7 +54,7 @@ func (sw *SlidingWindowCounter) Check(identity string, policy Policy) (Result, e
 		currentCount = 0
 	}
 
-	if currentCount >= policy.Limit {
+	if currentCount >= sw.limit {
 		resetTime := time.Unix(windowStart+windowSeconds, 0)
 		retryAfter := time.Until(resetTime)
 		if retryAfter < 0 {
@@ -54,7 +62,7 @@ func (sw *SlidingWindowCounter) Check(identity string, policy Policy) (Result, e
 		}
 		return Result{
 			Allowed:    false,
-			Remaining:  policy.Limit - currentCount,
+			Remaining:  sw.limit - currentCount,
 			RetryAfter: retryAfter,
 			ResetTime:  resetTime,
 		}, nil
@@ -66,7 +74,7 @@ func (sw *SlidingWindowCounter) Check(identity string, policy Policy) (Result, e
 	resetTime := time.Unix(windowStart+windowSeconds, 0)
 	return Result{
 		Allowed:    true,
-		Remaining:  policy.Limit - currentCount,
+		Remaining:  sw.limit - currentCount,
 		RetryAfter: 0,
 		ResetTime:  resetTime,
 	}, nil

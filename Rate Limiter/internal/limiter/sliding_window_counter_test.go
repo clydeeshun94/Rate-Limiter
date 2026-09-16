@@ -10,7 +10,7 @@ import (
 
 func TestSlidingWindowCounter_AllowsWithinLimit(t *testing.T) {
 	storage := rate.NewMemoryStorage()
-	l := limiter.NewSlidingWindowCounter(storage)
+	l := limiter.NewSlidingWindowCounterWithLimit(storage, 3)
 	policy := limiter.Policy{Limit: 3, Window: 60 * time.Second}
 
 	for i := 0; i < 3; i++ {
@@ -26,7 +26,7 @@ func TestSlidingWindowCounter_AllowsWithinLimit(t *testing.T) {
 
 func TestSlidingWindowCounter_DeniesOverLimit(t *testing.T) {
 	storage := rate.NewMemoryStorage()
-	l := limiter.NewSlidingWindowCounter(storage)
+	l := limiter.NewSlidingWindowCounterWithLimit(storage, 3)
 	policy := limiter.Policy{Limit: 3, Window: 60 * time.Second}
 
 	for i := 0; i < 3; i++ {
@@ -44,7 +44,7 @@ func TestSlidingWindowCounter_DeniesOverLimit(t *testing.T) {
 
 func TestSlidingWindowCounter_AvoidsBoundarySpike(t *testing.T) {
 	storage := rate.NewMemoryStorage()
-	l := limiter.NewSlidingWindowCounter(storage)
+	l := limiter.NewSlidingWindowCounterWithLimit(storage, 3)
 	policy := limiter.Policy{Limit: 3, Window: 5 * time.Second}
 
 	for i := 0; i < 3; i++ {

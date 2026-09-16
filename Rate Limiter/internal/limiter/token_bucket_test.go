@@ -10,7 +10,7 @@ import (
 
 func TestTokenBucket_AllowsWithinLimit(t *testing.T) {
 	storage := rate.NewMemoryStorage()
-	l := limiter.NewTokenBucket(storage)
+	l := limiter.NewTokenBucketWithLimit(storage, 5)
 	policy := limiter.Policy{Limit: 5, Window: 60 * time.Second}
 
 	for i := 0; i < 5; i++ {
@@ -26,7 +26,7 @@ func TestTokenBucket_AllowsWithinLimit(t *testing.T) {
 
 func TestTokenBucket_RefillsOverTime(t *testing.T) {
 	storage := rate.NewMemoryStorage()
-	l := limiter.NewTokenBucket(storage)
+	l := limiter.NewTokenBucketWithLimit(storage, 2)
 	policy := limiter.Policy{Limit: 2, Window: 2 * time.Second}
 
 	l.Check("bob", policy)
