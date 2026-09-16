@@ -2,11 +2,6 @@ package storage
 
 import "sync"
 
-type Record struct {
-	WindowStart int64
-	Count       int
-}
-
 type MemoryStorage struct {
 	mu      sync.Mutex
 	storage map[string]Record

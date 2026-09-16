@@ -3,18 +3,20 @@ package limiter
 import (
 	"sync"
 	"time"
+
+	rate "rate-limiter/internal/storage"
 )
 
 type SlidingWindowLog struct {
-	limit int
-	mu    sync.Mutex
-	logs  map[string][]int64
+	storage rate.Storage
+	limit   int
+	mu      sync.Mutex
 }
 
-func NewSlidingWindowLogWithLimit(limit int) *SlidingWindowLog {
+func NewSlidingWindowLogWithLimit(storage rate.Storage, limit int) *SlidingWindowLog {
 	return &SlidingWindowLog{
-		limit: limit,
-		logs:  make(map[string][]int64),
+		storage: storage,
+		limit:   limit,
 	}
 }
 
@@ -32,14 +34,19 @@ func (swl *SlidingWindowLog) Check(identity string, policy Policy) (Result, erro
 	windowSeconds := int64(policy.Window.Seconds())
 	cutoff := now - windowSeconds
 
-	timestamps := swl.logs[identity]
+	key := identity
+	record, exists := swl.storage.Get(key)
+
+	if !exists {
+		record = rate.Record{WindowStart: now, Timestamps: []int64{}}
+	}
+
 	var valid []int64
-	for _, ts := range timestamps {
+	for _, ts := range record.Timestamps {
 		if ts >= cutoff {
 			valid = append(valid, ts)
 		}
 	}
-	swl.logs[identity] = valid
 
 	if len(valid) >= swl.limit {
 		oldest := valid[0]
@@ -55,11 +62,15 @@ func (swl *SlidingWindowLog) Check(identity string, policy Policy) (Result, erro
 		}, nil
 	}
 
-	swl.logs[identity] = append(valid, now)
+	valid = append(valid, now)
+	record.Timestamps = valid
+	record.Count = len(valid)
+	record.WindowStart = now
+	swl.storage.Set(key, record)
 
 	return Result{
 		Allowed:    true,
-		Remaining:  swl.limit - len(swl.logs[identity]),
+		Remaining:  swl.limit - len(valid),
 		RetryAfter: 0,
 		ResetTime:  time.Unix(now+windowSeconds, 0),
 	}, nil
