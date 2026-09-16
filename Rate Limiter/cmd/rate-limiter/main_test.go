@@ -108,7 +108,10 @@ func TestHealthAndMetrics(t *testing.T) {
 
 	health := httptest.NewServer(http.HandlerFunc(svc.handleHealth))
 	defer health.Close()
-	resp, _ := http.Get(health.URL + "/health")
+	resp, err := http.Get(health.URL + "/health")
+	if err != nil {
+		t.Fatalf("health request failed: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("health: expected 200, got %d", resp.StatusCode)
@@ -116,7 +119,10 @@ func TestHealthAndMetrics(t *testing.T) {
 
 	metrics := httptest.NewServer(http.HandlerFunc(svc.handleMetrics))
 	defer metrics.Close()
-	resp, _ = http.Get(metrics.URL + "/metrics")
+	resp, err = http.Get(metrics.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("metrics request failed: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("metrics: expected 200, got %d", resp.StatusCode)

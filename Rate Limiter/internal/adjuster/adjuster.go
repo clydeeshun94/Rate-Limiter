@@ -40,6 +40,7 @@ type AdjusterConfig struct {
 	Interval       time.Duration
 	MinLimit       int
 	MaxLimit       int
+	StableDuration time.Duration
 }
 
 var DefaultWeights = map[string]float64{
@@ -51,18 +52,21 @@ var DefaultWeights = map[string]float64{
 }
 
 type state struct {
-	setter limiter.LimitSetter
-	limit  int
+	setter    limiter.LimitSetter
+	limit     int
+	prevLimit int
 }
 
 type Adjuster struct {
-	states  []state
-	provider MetricProvider
-	config  AdjusterConfig
-	running bool
-	mu      sync.Mutex
-	ticker  *time.Ticker
-	stop    chan bool
+	states        []state
+	provider      MetricProvider
+	config        AdjusterConfig
+	running       bool
+	mu            sync.Mutex
+	ticker        *time.Ticker
+	stop          chan bool
+	lastAdjustment time.Time
+	lastHealth    float64
 }
 
 func NewAdjuster(
@@ -83,6 +87,9 @@ func NewAdjuster(
 	if !hasRequired {
 		return nil, fmt.Errorf("at least one non-negotiable metric (ErrorRate or ResponseTime) must be configured")
 	}
+	if config.StableDuration <= 0 {
+		config.StableDuration = 5 * time.Minute
+	}
 	if config.Interval <= 0 {
 		config.Interval = 30 * time.Second
 	}
@@ -99,10 +106,12 @@ func NewAdjuster(
 	}
 
 	return &Adjuster{
-		states:   states,
-		provider: provider,
-		config:   config,
-		stop:     make(chan bool),
+		states:         states,
+		provider:       provider,
+		config:         config,
+		lastAdjustment: time.Time{},
+		lastHealth:     0,
+		stop:           make(chan bool),
 	}, nil
 }
 
@@ -137,6 +146,13 @@ func (a *Adjuster) run() {
 }
 
 func (a *Adjuster) adjust() {
+	a.mu.Lock()
+	if time.Since(a.lastAdjustment) < a.config.StableDuration {
+		a.mu.Unlock()
+		return
+	}
+	a.mu.Unlock()
+
 	metrics, err := a.provider.GetMetrics()
 	if err != nil {
 		return
@@ -146,14 +162,34 @@ func (a *Adjuster) adjust() {
 	warnings := a.checkWarnings(scores)
 	health := scores.Overall
 
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if health < a.lastHealth {
+		for i := range a.states {
+			a.states[i].setter.SetLimit(a.states[i].prevLimit)
+			a.states[i].limit = a.states[i].prevLimit
+		}
+		a.lastAdjustment = time.Now().Add(a.config.StableDuration * 3)
+		a.lastHealth = health
+		for _, w := range warnings {
+			fmt.Println("[ADJUSTER WARNING]", w)
+		}
+		return
+	}
+
 	for i := range a.states {
 		oldLimit := a.states[i].limit
 		newLimit := a.CalculateNewLimit(float64(oldLimit), health)
 		if newLimit != oldLimit {
+			a.states[i].prevLimit = oldLimit
 			a.states[i].setter.SetLimit(newLimit)
 			a.states[i].limit = newLimit
 		}
 	}
+
+	a.lastAdjustment = time.Now()
+	a.lastHealth = health
 
 	if len(warnings) > 0 {
 		for _, w := range warnings {
