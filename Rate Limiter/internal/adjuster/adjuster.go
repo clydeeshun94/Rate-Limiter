@@ -33,6 +33,14 @@ type Adjustment struct {
 	Reason  string
 }
 
+type AdjustmentStrategy int
+
+const (
+	Conservative AdjustmentStrategy = iota
+	Aggressive
+	Adaptive
+)
+
 type AdjusterConfig struct {
 	MetricsToWatch []string
 	Thresholds     map[string]float64
@@ -41,6 +49,9 @@ type AdjusterConfig struct {
 	MinLimit       int
 	MaxLimit       int
 	StableDuration time.Duration
+	Strategy       AdjustmentStrategy
+	MaxChange      float64
+	Smoothing      float64
 }
 
 var DefaultWeights = map[string]float64{
@@ -98,6 +109,25 @@ func NewAdjuster(
 	}
 	if config.MaxLimit <= config.MinLimit {
 		return nil, fmt.Errorf("MaxLimit must be greater than MinLimit")
+	}
+	if config.Mode == "aggressive" && config.Strategy == 0 {
+		config.Strategy = Aggressive
+	}
+	if config.Strategy == 0 {
+		config.Strategy = Conservative
+	}
+	if config.MaxChange <= 0 {
+		switch config.Strategy {
+		case Aggressive:
+			config.MaxChange = 0.50
+		case Adaptive:
+			config.MaxChange = 0.30
+		default:
+			config.MaxChange = 0.10
+		}
+	}
+	if config.Smoothing <= 0 {
+		config.Smoothing = 1.0
 	}
 
 	states := make([]state, len(limiters))
@@ -327,29 +357,55 @@ func (a *Adjuster) checkWarnings(scores HealthScore) []string {
 func (a *Adjuster) calculateNewLimit(current, health float64) int {
 	limit := int(current)
 
+	var baseRate float64
 	if health > 70 {
-		newLimit := limit + (limit / 10)
-		if newLimit > a.config.MaxLimit {
-			newLimit = a.config.MaxLimit
-		}
-		return newLimit
+		baseRate = a.getIncreaseRate()
+	} else if health < 30 {
+		baseRate = a.getDecreaseRate()
+	} else {
+		return limit
 	}
 
-	if health < 30 {
-		var reduction float64
-		if a.config.Mode == "aggressive" {
-			reduction = 0.5
-		} else {
-			reduction = 0.1
-		}
-		newLimit := int(float64(limit) * (1 - reduction))
-		if newLimit < a.config.MinLimit {
-			newLimit = a.config.MinLimit
-		}
-		return newLimit
+	adjustment := float64(limit) * baseRate * a.config.Smoothing
+
+	maxChange := float64(limit) * a.config.MaxChange
+	if adjustment > maxChange {
+		adjustment = maxChange
+	}
+	if adjustment < -maxChange {
+		adjustment = -maxChange
 	}
 
-	return limit
+	newLimit := limit + int(adjustment)
+	if newLimit > a.config.MaxLimit {
+		newLimit = a.config.MaxLimit
+	}
+	if newLimit < a.config.MinLimit {
+		newLimit = a.config.MinLimit
+	}
+	return newLimit
+}
+
+func (a *Adjuster) getIncreaseRate() float64 {
+	switch a.config.Strategy {
+	case Aggressive:
+		return 0.20
+	case Adaptive:
+		return 0.15
+	default:
+		return 0.10
+	}
+}
+
+func (a *Adjuster) getDecreaseRate() float64 {
+	switch a.config.Strategy {
+	case Aggressive:
+		return -0.50
+	case Adaptive:
+		return -0.30
+	default:
+		return -0.10
+	}
 }
 
 func contains(slice []string, item string) bool {
