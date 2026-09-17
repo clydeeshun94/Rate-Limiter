@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -379,5 +380,82 @@ func TestAdmin_SetConfigInvalidJSON(t *testing.T) {
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestLoadConfig_Defaults(t *testing.T) {
+	os.Unsetenv("RLIMITER_PORT")
+	os.Unsetenv("RLIMITER_DEFAULT_LIMIT")
+	os.Unsetenv("RLIMITER_ALGORITHMS")
+	defer os.Unsetenv("RLIMITER_PORT")
+	defer os.Unsetenv("RLIMITER_DEFAULT_LIMIT")
+	defer os.Unsetenv("RLIMITER_ALGORITHMS")
+
+	cfg := loadConfig()
+
+	if cfg.Port != 8080 {
+		t.Fatalf("expected default port 8080, got %d", cfg.Port)
+	}
+	if cfg.DefaultLimit != 100 {
+		t.Fatalf("expected default limit 100, got %d", cfg.DefaultLimit)
+	}
+	if len(cfg.Algorithms) != 5 {
+		t.Fatalf("expected 5 algorithms, got %d", len(cfg.Algorithms))
+	}
+}
+
+func TestLoadConfig_PortFromEnv(t *testing.T) {
+	os.Setenv("RLIMITER_PORT", "9090")
+	defer os.Unsetenv("RLIMITER_PORT")
+
+	cfg := loadConfig()
+	if cfg.Port != 9090 {
+		t.Fatalf("expected port 9090, got %d", cfg.Port)
+	}
+}
+
+func TestLoadConfig_DefaultLimitFromEnv(t *testing.T) {
+	os.Setenv("RLIMITER_DEFAULT_LIMIT", "250")
+	defer os.Unsetenv("RLIMITER_DEFAULT_LIMIT")
+
+	cfg := loadConfig()
+	if cfg.DefaultLimit != 250 {
+		t.Fatalf("expected limit 250, got %d", cfg.DefaultLimit)
+	}
+}
+
+func TestLoadConfig_AlgorithmsFromEnv(t *testing.T) {
+	os.Setenv("RLIMITER_ALGORITHMS", "fixed_window,token_bucket")
+	defer os.Unsetenv("RLIMITER_ALGORITHMS")
+
+	cfg := loadConfig()
+	if len(cfg.Algorithms) != 2 {
+		t.Fatalf("expected 2 algorithms, got %d", len(cfg.Algorithms))
+	}
+	if cfg.Algorithms[0] != "fixed_window" {
+		t.Fatalf("expected fixed_window, got %s", cfg.Algorithms[0])
+	}
+	if cfg.Algorithms[1] != "token_bucket" {
+		t.Fatalf("expected token_bucket, got %s", cfg.Algorithms[1])
+	}
+}
+
+func TestLoadConfig_InvalidPortIgnored(t *testing.T) {
+	os.Setenv("RLIMITER_PORT", "not_a_number")
+	defer os.Unsetenv("RLIMITER_PORT")
+
+	cfg := loadConfig()
+	if cfg.Port != 8080 {
+		t.Fatalf("expected fallback port 8080, got %d", cfg.Port)
+	}
+}
+
+func TestLoadConfig_InvalidLimitIgnored(t *testing.T) {
+	os.Setenv("RLIMITER_DEFAULT_LIMIT", "abc")
+	defer os.Unsetenv("RLIMITER_DEFAULT_LIMIT")
+
+	cfg := loadConfig()
+	if cfg.DefaultLimit != 100 {
+		t.Fatalf("expected fallback limit 100, got %d", cfg.DefaultLimit)
 	}
 }

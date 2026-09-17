@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	limiter "rate-limiter/internal/limiter"
@@ -70,23 +72,50 @@ type configUpdateRequest struct {
 	Algorithms   []string `json:"algorithms"`
 }
 
+func loadConfig() serverConfig {
+    cfg := serverConfig{
+        Port:         8080,
+        DefaultLimit: 100,
+        Algorithms: []string{
+            "fixed_window",
+            "sliding_window_counter",
+            "sliding_window_log",
+            "token_bucket",
+            "leaky_bucket",
+        },
+    }
+
+    if portStr := os.Getenv("RLIMITER_PORT"); portStr != "" {
+        if port, err := strconv.Atoi(portStr); err == nil {
+            cfg.Port = port
+        }
+    }
+
+    if limitStr := os.Getenv("RLIMITER_DEFAULT_LIMIT"); limitStr != "" {
+        if limit, err := strconv.Atoi(limitStr); err == nil {
+            cfg.DefaultLimit = limit
+        }
+    }
+
+    if algosStr := os.Getenv("RLIMITER_ALGORITHMS"); algosStr != "" {
+        cfg.Algorithms = strings.Split(algosStr, ",")
+    }
+
+    return cfg
+}
+
 func newService() *service {
-	collector := metrics.NewCollector()
-	defaultLimit := 100
-	algorithms := []string{
-		"fixed_window",
-		"sliding_window_counter",
-		"sliding_window_log",
-		"token_bucket",
-		"leaky_bucket",
-	}
+    collector := metrics.NewCollector()
+    config := loadConfig()
+    defaultLimit := config.DefaultLimit
+    algorithms := config.Algorithms
 
 	l := &service{
 		limiters:  make(map[string]limiter.RateLimiter),
 		limits:    make(map[string]int),
 		collector: collector,
 		config: serverConfig{
-			Port:         8080,
+			Port:         config.Port,
 			DefaultLimit: defaultLimit,
 			Algorithms:   algorithms,
 		},
