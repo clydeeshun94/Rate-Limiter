@@ -1,0 +1,9 @@
+.git
+.gitignore
+**/*_test.go
+**/tests/
+Makefile
+Makefile.ps1
+.DS_Store
+.vscode/
+.idea/
