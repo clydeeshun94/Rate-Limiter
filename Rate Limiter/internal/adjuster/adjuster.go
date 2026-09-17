@@ -6,6 +6,7 @@ import (
 	"time"
 
 	limiter "rate-limiter/internal/limiter"
+	"rate-limiter/pkg/logging"
 )
 
 type Metrics struct {
@@ -52,6 +53,7 @@ type AdjusterConfig struct {
 	Strategy       AdjustmentStrategy
 	MaxChange      float64
 	Smoothing      float64
+	Logger         logging.Logger
 }
 
 var DefaultWeights = map[string]float64{
@@ -78,6 +80,7 @@ type Adjuster struct {
 	stop          chan bool
 	lastAdjustment time.Time
 	lastHealth    float64
+	logger        logging.Logger
 }
 
 func NewAdjuster(
@@ -126,6 +129,9 @@ func NewAdjuster(
 			config.MaxChange = 0.10
 		}
 	}
+	if config.Logger == nil {
+		config.Logger = &logging.NoOpLogger{}
+	}
 	if config.Smoothing <= 0 {
 		config.Smoothing = 1.0
 	}
@@ -142,6 +148,7 @@ func NewAdjuster(
 		lastAdjustment: time.Time{},
 		lastHealth:     0,
 		stop:           make(chan bool),
+		logger:         config.Logger,
 	}, nil
 }
 
@@ -203,7 +210,7 @@ func (a *Adjuster) adjust() {
 		a.lastAdjustment = time.Now().Add(a.config.StableDuration * 3)
 		a.lastHealth = health
 		for _, w := range warnings {
-			fmt.Println("[ADJUSTER WARNING]", w)
+			a.logger.Warn(w, nil)
 		}
 		return
 	}
@@ -223,7 +230,7 @@ func (a *Adjuster) adjust() {
 
 	if len(warnings) > 0 {
 		for _, w := range warnings {
-			fmt.Println("[ADJUSTER WARNING]", w)
+			a.logger.Warn(w, nil)
 		}
 	}
 }
