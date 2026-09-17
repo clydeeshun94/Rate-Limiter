@@ -8,18 +8,17 @@ import (
 )
 
 type LeakyBucket struct {
-	storage   rate.Storage
-	limit     int
-	water     int
-	lastLeak  int64
-	mu        sync.Mutex
+	storage  rate.Storage
+	limit    int
+	water    map[string]int
+	mu       sync.Mutex
 }
 
 func NewLeakyBucketWithLimit(storage rate.Storage, limit int) *LeakyBucket {
 	return &LeakyBucket{
 		storage: storage,
 		limit:   limit,
-		water:   0,
+		water:   make(map[string]int),
 	}
 }
 
@@ -42,33 +41,33 @@ func (lb *LeakyBucket) Check(identity string, policy Policy) (Result, error) {
 
 	if exists {
 		elapsed := float64(now - record.WindowStart)
-		lb.water -= int(leakRate * elapsed)
-		if lb.water < 0 {
-			lb.water = 0
+		lb.water[key] -= int(leakRate * elapsed)
+		if lb.water[key] < 0 {
+			lb.water[key] = 0
 		}
 	}
 
-	if lb.water+1 > lb.limit {
-		retryAfter := time.Duration(float64(time.Second) * (float64(lb.water+1-lb.limit) / leakRate))
+	if lb.water[key]+1 > lb.limit {
+		retryAfter := time.Duration(float64(time.Second) * (float64(lb.water[key]+1-lb.limit) / leakRate))
 		if retryAfter < 0 {
 			retryAfter = 0
 		}
 		return Result{
 			Allowed:    false,
 			Limit:      lb.limit,
-			Remaining:  lb.limit - lb.water,
+			Remaining:  lb.limit - lb.water[key],
 			RetryAfter: retryAfter,
 			ResetTime:  time.Now().Add(retryAfter),
 		}, nil
 	}
 
-	lb.water++
-	lb.storage.Set(key, rate.Record{WindowStart: now, Count: lb.water})
+	lb.water[key]++
+	lb.storage.Set(key, rate.Record{WindowStart: now, Count: lb.water[key]})
 
 	return Result{
 		Allowed:    true,
 		Limit:      lb.limit,
-		Remaining:  lb.limit - lb.water,
+		Remaining:  lb.limit - lb.water[key],
 		RetryAfter: 0,
 		ResetTime:  time.Now().Add(time.Duration(windowSeconds) * time.Second),
 	}, nil
