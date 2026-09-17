@@ -132,3 +132,252 @@ func TestHealthAndMetrics(t *testing.T) {
 		t.Fatal("metrics: expected non-empty response")
 	}
 }
+
+func TestAdmin_GetLimits(t *testing.T) {
+	svc := newService()
+
+	server := httptest.NewServer(http.HandlerFunc(svc.handleGetLimits))
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/limits")
+	if err != nil {
+		t.Fatalf("limits request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var result limitsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	if len(result.Limits) != len(svc.config.Algorithms) {
+		t.Fatalf("expected %d limits, got %d", len(svc.config.Algorithms), len(result.Limits))
+	}
+
+	for _, li := range result.Limits {
+		if li.Limit != svc.limits[li.Algorithm] {
+			t.Fatalf("limit mismatch for %s: expected %d, got %d", li.Algorithm, svc.limits[li.Algorithm], li.Limit)
+		}
+		if li.Limit != svc.config.DefaultLimit {
+			t.Fatalf("limit for %s should be default %d, got %d", li.Algorithm, svc.config.DefaultLimit, li.Limit)
+		}
+	}
+}
+
+func TestAdmin_GetLimitsMethodNotAllowed(t *testing.T) {
+	svc := newService()
+
+	server := httptest.NewServer(http.HandlerFunc(svc.handleGetLimits))
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/limits", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", resp.StatusCode)
+	}
+}
+
+func TestAdmin_SetLimits(t *testing.T) {
+	svc := newService()
+
+	server := httptest.NewServer(http.HandlerFunc(svc.handleSetLimits))
+	defer server.Close()
+
+	body, _ := json.Marshal(limitsRequest{
+		Limits: []limitRequest{
+			{Algorithm: "fixed_window", Limit: 200},
+			{Algorithm: "token_bucket", Limit: 50},
+		},
+	})
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/limits", bytes.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	if svc.limits["fixed_window"] != 200 {
+		t.Fatalf("fixed_window limit should be 200, got %d", svc.limits["fixed_window"])
+	}
+	if svc.limits["token_bucket"] != 50 {
+		t.Fatalf("token_bucket limit should be 50, got %d", svc.limits["token_bucket"])
+	}
+
+	var result map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if result["status"] != "limits updated" {
+		t.Fatalf("expected status 'limits updated', got %s", result["status"])
+	}
+}
+
+func TestAdmin_SetLimitsUnknownAlgorithm(t *testing.T) {
+	svc := newService()
+
+	server := httptest.NewServer(http.HandlerFunc(svc.handleSetLimits))
+	defer server.Close()
+
+	body, _ := json.Marshal(limitsRequest{
+		Limits: []limitRequest{
+			{Algorithm: "nonexistent", Limit: 100},
+		},
+	})
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/limits", bytes.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestAdmin_GetConfig(t *testing.T) {
+	svc := newService()
+
+	server := httptest.NewServer(http.HandlerFunc(svc.handleGetConfig))
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/config")
+	if err != nil {
+		t.Fatalf("config request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var result configResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	if result.Port != svc.config.Port {
+		t.Fatalf("port mismatch: expected %d, got %d", svc.config.Port, result.Port)
+	}
+	if result.DefaultLimit != svc.config.DefaultLimit {
+		t.Fatalf("default_limit mismatch: expected %d, got %d", svc.config.DefaultLimit, result.DefaultLimit)
+	}
+	if len(result.Algorithms) != len(svc.config.Algorithms) {
+		t.Fatalf("algorithms count mismatch: expected %d, got %d", len(svc.config.Algorithms), len(result.Algorithms))
+	}
+}
+
+func TestAdmin_GetConfigMethodNotAllowed(t *testing.T) {
+	svc := newService()
+
+	server := httptest.NewServer(http.HandlerFunc(svc.handleGetConfig))
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/config", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", resp.StatusCode)
+	}
+}
+
+func TestAdmin_SetConfig(t *testing.T) {
+	svc := newService()
+
+	server := httptest.NewServer(http.HandlerFunc(svc.handleSetConfig))
+	defer server.Close()
+
+	body, _ := json.Marshal(configUpdateRequest{
+		Port:         9090,
+		DefaultLimit: 250,
+	})
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/config", bytes.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	if svc.config.Port != 9090 {
+		t.Fatalf("port should be 9090, got %d", svc.config.Port)
+	}
+	if svc.config.DefaultLimit != 250 {
+		t.Fatalf("default_limit should be 250, got %d", svc.config.DefaultLimit)
+	}
+
+	var result map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if result["status"] != "config updated" {
+		t.Fatalf("expected status 'config updated', got %s", result["status"])
+	}
+}
+
+func TestAdmin_SetConfigPartialUpdate(t *testing.T) {
+	svc := newService()
+
+	server := httptest.NewServer(http.HandlerFunc(svc.handleSetConfig))
+	defer server.Close()
+
+	body, _ := json.Marshal(configUpdateRequest{
+		Port: 0,
+		DefaultLimit: 300,
+	})
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/config", bytes.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if svc.config.Port != 8080 {
+		t.Fatalf("port should remain 8080, got %d", svc.config.Port)
+	}
+	if svc.config.DefaultLimit != 300 {
+		t.Fatalf("default_limit should be 300, got %d", svc.config.DefaultLimit)
+	}
+}
+
+func TestAdmin_SetConfigInvalidJSON(t *testing.T) {
+	svc := newService()
+
+	server := httptest.NewServer(http.HandlerFunc(svc.handleSetConfig))
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/config", bytes.NewReader([]byte("invalid json")))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
