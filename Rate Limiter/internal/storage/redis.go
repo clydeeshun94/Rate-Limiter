@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -10,9 +11,10 @@ import (
 type RedisStorage struct {
 	client *redis.Client
 	ctx    context.Context
+	ttl    time.Duration
 }
 
-func NewRedisStorage(addr string, password string, db int) *RedisStorage {
+func NewRedisStorage(addr string, password string, db int, ttl time.Duration) *RedisStorage {
 	return &RedisStorage{
 		client: redis.NewClient(&redis.Options{
 			Addr:     addr,
@@ -20,6 +22,7 @@ func NewRedisStorage(addr string, password string, db int) *RedisStorage {
 			DB:       db,
 		}),
 		ctx: context.Background(),
+		ttl: ttl,
 	}
 }
 
@@ -46,7 +49,7 @@ func (r *RedisStorage) Set(key string, record Record) error {
 		return err
 	}
 
-	return r.client.Set(r.ctx, key, data, 0).Err()
+	return r.client.Set(r.ctx, key, data, r.ttl).Err()
 }
 
 func (r *RedisStorage) Delete(key string) error {
