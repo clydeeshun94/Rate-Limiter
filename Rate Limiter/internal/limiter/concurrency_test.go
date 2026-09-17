@@ -159,7 +159,8 @@ func TestLeakyBucket_ConcurrentParallel(t *testing.T) {
 }
 
 func TestSlidingWindowLog_Concurrent(t *testing.T) {
-	l := limiter.NewSlidingWindowLogWithLimit(100)
+	storage := rate.NewMemoryStorage()
+	l := limiter.NewSlidingWindowLogWithLimit(storage, 100)
 	policy := limiter.Policy{Limit: 100, Window: 60 * time.Second}
 
 	var wg sync.WaitGroup
@@ -305,7 +306,8 @@ func TestFixedWindow_ConcurrentUsesAtomicCounter(t *testing.T) {
 }
 
 func TestSlidingWindowLog_ConcurrentStress(t *testing.T) {
-	l := limiter.NewSlidingWindowLogWithLimit(200)
+	storage := rate.NewMemoryStorage()
+	l := limiter.NewSlidingWindowLogWithLimit(storage, 200)
 	policy := limiter.Policy{Limit: 200, Window: 60 * time.Second}
 
 	var wg sync.WaitGroup
