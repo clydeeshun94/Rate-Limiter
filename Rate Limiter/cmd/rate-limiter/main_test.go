@@ -560,3 +560,35 @@ func TestLoadConfig_InvalidLimitIgnored(t *testing.T) {
 		t.Fatalf("expected fallback limit 100, got %d", cfg.DefaultLimit)
 	}
 }
+
+func TestNewLogger_NoOpDefault(t *testing.T) {
+	l := newLogger("")
+	if l == nil {
+		t.Fatal("expected non-nil logger")
+	}
+	l.Info("test", nil)
+	l.Warn("test", nil)
+	l.Error("test", nil)
+}
+
+func TestNewLogger_SimpleLogger(t *testing.T) {
+	for _, level := range []string{"info", "debug", "warn", "error"} {
+		l := newLogger(level)
+		if l == nil {
+			t.Fatalf("expected non-nil logger for level %s", level)
+		}
+		l.Info("test", nil)
+		l.Warn("test", nil)
+		l.Error("test", nil)
+	}
+}
+
+func TestNewLogger_LogLevelConfig(t *testing.T) {
+	os.Setenv("RLIMITER_LOG_LEVEL", "info")
+	defer os.Unsetenv("RLIMITER_LOG_LEVEL")
+
+	cfg := loadConfig()
+	if cfg.LogLevel != "info" {
+		t.Fatalf("expected log level info, got %s", cfg.LogLevel)
+	}
+}
