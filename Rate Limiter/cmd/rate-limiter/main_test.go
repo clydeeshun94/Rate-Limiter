@@ -12,6 +12,7 @@ import (
 	"time"
 
 	limiter "rate-limiter/internal/limiter"
+	"rate-limiter/internal/config"
 )
 
 func TestCheck_ReturnsRateLimitHeaders(t *testing.T) {
@@ -492,7 +493,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	defer os.Unsetenv("RLIMITER_DEFAULT_LIMIT")
 	defer os.Unsetenv("RLIMITER_ALGORITHMS")
 
-	cfg := loadConfig()
+	cfg := config.LoadConfig()
 
 	if cfg.Port != 8080 {
 		t.Fatalf("expected default port 8080, got %d", cfg.Port)
@@ -509,7 +510,7 @@ func TestLoadConfig_PortFromEnv(t *testing.T) {
 	os.Setenv("RLIMITER_PORT", "9090")
 	defer os.Unsetenv("RLIMITER_PORT")
 
-	cfg := loadConfig()
+	cfg := config.LoadConfig()
 	if cfg.Port != 9090 {
 		t.Fatalf("expected port 9090, got %d", cfg.Port)
 	}
@@ -519,7 +520,7 @@ func TestLoadConfig_DefaultLimitFromEnv(t *testing.T) {
 	os.Setenv("RLIMITER_DEFAULT_LIMIT", "250")
 	defer os.Unsetenv("RLIMITER_DEFAULT_LIMIT")
 
-	cfg := loadConfig()
+	cfg := config.LoadConfig()
 	if cfg.DefaultLimit != 250 {
 		t.Fatalf("expected limit 250, got %d", cfg.DefaultLimit)
 	}
@@ -529,7 +530,7 @@ func TestLoadConfig_AlgorithmsFromEnv(t *testing.T) {
 	os.Setenv("RLIMITER_ALGORITHMS", "fixed_window,token_bucket")
 	defer os.Unsetenv("RLIMITER_ALGORITHMS")
 
-	cfg := loadConfig()
+	cfg := config.LoadConfig()
 	if len(cfg.Algorithms) != 2 {
 		t.Fatalf("expected 2 algorithms, got %d", len(cfg.Algorithms))
 	}
@@ -545,7 +546,7 @@ func TestLoadConfig_InvalidPortIgnored(t *testing.T) {
 	os.Setenv("RLIMITER_PORT", "not_a_number")
 	defer os.Unsetenv("RLIMITER_PORT")
 
-	cfg := loadConfig()
+	cfg := config.LoadConfig()
 	if cfg.Port != 8080 {
 		t.Fatalf("expected fallback port 8080, got %d", cfg.Port)
 	}
@@ -555,14 +556,14 @@ func TestLoadConfig_InvalidLimitIgnored(t *testing.T) {
 	os.Setenv("RLIMITER_DEFAULT_LIMIT", "abc")
 	defer os.Unsetenv("RLIMITER_DEFAULT_LIMIT")
 
-	cfg := loadConfig()
+	cfg := config.LoadConfig()
 	if cfg.DefaultLimit != 100 {
 		t.Fatalf("expected fallback limit 100, got %d", cfg.DefaultLimit)
 	}
 }
 
 func TestNewLogger_NoOpDefault(t *testing.T) {
-	l := newLogger("")
+	l := config.NewLogger("")
 	if l == nil {
 		t.Fatal("expected non-nil logger")
 	}
@@ -573,7 +574,7 @@ func TestNewLogger_NoOpDefault(t *testing.T) {
 
 func TestNewLogger_SimpleLogger(t *testing.T) {
 	for _, level := range []string{"info", "debug", "warn", "error"} {
-		l := newLogger(level)
+		l := config.NewLogger(level)
 		if l == nil {
 			t.Fatalf("expected non-nil logger for level %s", level)
 		}
@@ -587,7 +588,7 @@ func TestNewLogger_LogLevelConfig(t *testing.T) {
 	os.Setenv("RLIMITER_LOG_LEVEL", "info")
 	defer os.Unsetenv("RLIMITER_LOG_LEVEL")
 
-	cfg := loadConfig()
+	cfg := config.LoadConfig()
 	if cfg.LogLevel != "info" {
 		t.Fatalf("expected log level info, got %s", cfg.LogLevel)
 	}
