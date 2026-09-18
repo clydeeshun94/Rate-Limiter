@@ -13,12 +13,14 @@ import (
 	limiter "rate-limiter/internal/limiter"
 	rate "rate-limiter/internal/storage"
 	"rate-limiter/internal/metrics"
+	"rate-limiter/pkg/logging"
 )
 
 type service struct {
 	limiters  map[string]limiter.RateLimiter
 	limits    map[string]int
 	collector *metrics.Collector
+	logger    logging.Logger
 	config    serverConfig
 }
 
@@ -27,6 +29,7 @@ type serverConfig struct {
 	DefaultLimit int      `json:"default_limit"`
 	Algorithms   []string `json:"algorithms"`
 	AuthToken    string   `json:"auth_token"`
+	LogLevel     string   `json:"log_level"`
 }
 
 type checkRequest struct {
@@ -103,8 +106,18 @@ func loadConfig() serverConfig {
     }
 
     cfg.AuthToken = os.Getenv("RLIMITER_AUTH_TOKEN")
+    cfg.LogLevel = os.Getenv("RLIMITER_LOG_LEVEL")
 
     return cfg
+}
+
+func newLogger(level string) logging.Logger {
+    switch level {
+    case "info", "debug", "warn", "error":
+        return &logging.SimpleLogger{}
+    default:
+        return &logging.NoOpLogger{}
+    }
 }
 
 func newService() *service {
@@ -117,11 +130,13 @@ func newService() *service {
 		limiters:  make(map[string]limiter.RateLimiter),
 		limits:    make(map[string]int),
 		collector: collector,
+		logger:    newLogger(config.LogLevel),
 		config: serverConfig{
 			Port:         config.Port,
 			DefaultLimit: defaultLimit,
 			Algorithms:   algorithms,
 			AuthToken:    config.AuthToken,
+			LogLevel:     config.LogLevel,
 		},
 	}
 
