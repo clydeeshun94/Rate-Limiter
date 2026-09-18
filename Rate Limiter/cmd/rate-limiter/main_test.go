@@ -383,6 +383,107 @@ func TestAdmin_SetConfigInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestAdmin_NoAuthToken_Allowed(t *testing.T) {
+	os.Unsetenv("RLIMITER_AUTH_TOKEN")
+	defer os.Unsetenv("RLIMITER_AUTH_TOKEN")
+
+	svc := newService()
+	server := httptest.NewServer(http.HandlerFunc(svc.authMiddleware(svc.handleGetLimits)))
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/limits")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 without auth, got %d", resp.StatusCode)
+	}
+}
+
+func TestAdmin_AuthToken_RequiresAuth(t *testing.T) {
+	os.Setenv("RLIMITER_AUTH_TOKEN", "secret-token")
+	defer os.Unsetenv("RLIMITER_AUTH_TOKEN")
+
+	svc := newService()
+	server := httptest.NewServer(http.HandlerFunc(svc.authMiddleware(svc.handleGetLimits)))
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/limits")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without token, got %d", resp.StatusCode)
+	}
+}
+
+func TestAdmin_AuthToken_AllowedWithToken(t *testing.T) {
+	os.Setenv("RLIMITER_AUTH_TOKEN", "secret-token")
+	defer os.Unsetenv("RLIMITER_AUTH_TOKEN")
+
+	svc := newService()
+	server := httptest.NewServer(http.HandlerFunc(svc.authMiddleware(svc.handleGetLimits)))
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/limits", nil)
+	req.Header.Set("Authorization", "secret-token")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 with valid token, got %d", resp.StatusCode)
+	}
+}
+
+func TestAdmin_AuthToken_WrongToken(t *testing.T) {
+	os.Setenv("RLIMITER_AUTH_TOKEN", "secret-token")
+	defer os.Unsetenv("RLIMITER_AUTH_TOKEN")
+
+	svc := newService()
+	server := httptest.NewServer(http.HandlerFunc(svc.authMiddleware(svc.handleGetLimits)))
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/limits", nil)
+	req.Header.Set("Authorization", "wrong-token")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with wrong token, got %d", resp.StatusCode)
+	}
+}
+
+func TestAdmin_AuthToken_PublicEndpointsUnaffected(t *testing.T) {
+	os.Setenv("RLIMITER_AUTH_TOKEN", "secret-token")
+	defer os.Unsetenv("RLIMITER_AUTH_TOKEN")
+
+	svc := newService()
+	server := httptest.NewServer(http.HandlerFunc(svc.handleHealth))
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/health")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on public endpoint, got %d", resp.StatusCode)
+	}
+}
+
 func TestLoadConfig_Defaults(t *testing.T) {
 	os.Unsetenv("RLIMITER_PORT")
 	os.Unsetenv("RLIMITER_DEFAULT_LIMIT")

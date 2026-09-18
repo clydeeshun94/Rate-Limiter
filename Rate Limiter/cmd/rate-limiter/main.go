@@ -26,6 +26,7 @@ type serverConfig struct {
 	Port         int      `json:"port"`
 	DefaultLimit int      `json:"default_limit"`
 	Algorithms   []string `json:"algorithms"`
+	AuthToken    string   `json:"auth_token"`
 }
 
 type checkRequest struct {
@@ -101,6 +102,8 @@ func loadConfig() serverConfig {
         cfg.Algorithms = strings.Split(algosStr, ",")
     }
 
+    cfg.AuthToken = os.Getenv("RLIMITER_AUTH_TOKEN")
+
     return cfg
 }
 
@@ -118,6 +121,7 @@ func newService() *service {
 			Port:         config.Port,
 			DefaultLimit: defaultLimit,
 			Algorithms:   algorithms,
+			AuthToken:    config.AuthToken,
 		},
 	}
 
@@ -331,13 +335,28 @@ func (s *service) handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
+func (s *service) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        if s.config.AuthToken == "" {
+            next(w, r)
+            return
+        }
+        token := r.Header.Get("Authorization")
+        if token != s.config.AuthToken {
+            http.Error(w, "unauthorized", http.StatusUnauthorized)
+            return
+        }
+        next(w, r)
+    }
+}
+
 func main() {
 	svc := newService()
 
 	http.HandleFunc("/check", svc.handleCheck)
-	http.HandleFunc("/limit", svc.handleLimit)
-	http.HandleFunc("/limits", svc.handleLimits)
-	http.HandleFunc("/config", svc.handleConfig)
+	http.HandleFunc("/limit", svc.authMiddleware(svc.handleLimit))
+	http.HandleFunc("/limits", svc.authMiddleware(svc.handleLimits))
+	http.HandleFunc("/config", svc.authMiddleware(svc.handleConfig))
 	http.HandleFunc("/metrics", svc.handleMetrics)
 	http.HandleFunc("/health", svc.handleHealth)
 
