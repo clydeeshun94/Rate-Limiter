@@ -23,6 +23,25 @@
 | [#23](https://github.com/clydeeshun94/Rate-Limiter/pull/23) | `fix/observability-configs` | ✅ Merged |
 | [#24](https://github.com/clydeeshun94/Rate-Limiter/pull/24) | `fix/observability-configs` | ✅ Merged |
 
+## Documentation PRs (Rate Limiter internal)
+
+| PR | Branch | Status | Notes |
+|----|--------|--------|-------|
+| [#25](https://github.com/clydeeshun94/Rate-Limiter/pull/25) | `docs/comments-fixed_window` | ✅ Merged | Comments: fixed_window.go |
+| [#26](https://github.com/clydeeshun94/Rate-Limiter/pull/26) | `docs/comments-sliding_window_counter` | 🟡 Open | Comments: sliding_window_counter.go |
+| [#27](https://github.com/clydeeshun94/Rate-Limiter/pull/27) | `docs/comments-leaky_bucket` | ✅ Merged | Comments: leaky_bucket.go |
+| [#28](https://github.com/clydeeshun94/Rate-Limiter/pull/28) | `docs/comments-token_bucket` | 🟡 Open | Comments: token_bucket.go |
+| [#29](https://github.com/clydeeshun94/Rate-Limiter/pull/29) | `docs/comments-sliding_window_log` | 🟡 Open | Comments: sliding_window_log.go |
+| [#30](https://github.com/clydeeshun94/Rate-Limiter/pull/30) | `docs/comments-adjuster` | 🟡 Open | Comments: adjuster.go |
+| [#31](https://github.com/clydeeshun94/Rate-Limiter/pull/31) | `docs/comments-collector` | 🟡 Open | Comments: metrics/collector.go |
+| [#32](https://github.com/clydeeshun94/Rate-Limiter/pull/32) | `docs/comments-interface` | 🟡 Open | Comments: storage/interface.go |
+| [#33](https://github.com/clydeeshun94/Rate-Limiter/pull/33) | `docs/comments-memory` | 🟡 Open | Comments: storage/memory.go |
+| [#34](https://github.com/clydeeshun94/Rate-Limiter/pull/34) | `docs/comments-redis` | 🟡 Open | Comments: storage/redis.go |
+| [#35](https://github.com/clydeeshun94/Rate-Limiter/pull/35) | `docs/comments-logger` | 🟡 Open | Comments: pkg/logging/logger.go |
+| [#36](https://github.com/clydeeshun94/Rate-Limiter/pull/36) | `docs/comments-client` | 🟡 Open | Comments: pkg/rateclient/client.go |
+| [#37](https://github.com/clydeeshun94/Rate-Limiter/pull/37) | `docs/comments-limiter_test` | 🟡 Open | Comments: tests/integration/limiter_test.go |
+| [#38](https://github.com/clydeeshun94/Rate-Limiter/pull/38) | `docs/comments-makefile` | 🟡 Open | Comments: Makefile |
+
 ## External PRs (Pull Shark)
 
 | PR | Branch | Status | Notes |
