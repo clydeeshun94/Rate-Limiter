@@ -1,4 +1,4 @@
-# PR Status — All Merged ✅
+# PR Status — Active Development 🚧
 
 | PR | Branch | Status |
 |----|--------|--------|
@@ -70,11 +70,12 @@
 
 ## Summary
 
-- **Total PRs:** 24
-- **Merged:** 24
-- **Open:** 0
+- **Total PRs:** 38
+- **Merged:** 26
+- **Open:** 12
 - **Fixes from fixes.md (1–13):** All ✅
 - **Review fixes (14–21):** All ✅
+- **Documentation (25–38):** 14 PRs open (1 merged: #25, #27)
 - **Build:** ✅ Passing
 - **Tests:** ✅ All passing
 - **Vet:** ✅ Clean
