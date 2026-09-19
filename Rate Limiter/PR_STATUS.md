@@ -47,7 +47,7 @@
 | PR | Branch | Status | Notes |
 |----|--------|--------|-------|
 | [#81](https://github.com/ulikunitz/xz/pull/81) | `master` | 🟡 Open | Fix: retry (0,nil) reads in breader.ReadByte |
-| [#1](https://github.com/clydeeshun94/resty/pull/1) | `v3` | 🟡 Open | Fix: handle error from cookiejar.New in createCookieJar |
+| [#2](https://github.com/clydeeshun94/resty/pull/2) | `fix/cookiejar-error` | 🟡 Open | Fix: handle error from cookiejar.New in createCookieJar (clean 1-commit PR, replaces #1) |
 
 > Both PRs target external repos (required for Pull Shark badge). 2 merged = badge.
 
