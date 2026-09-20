@@ -1,0 +1,60 @@
+# deploy/kubernetes/deployment.yaml — rate limiter pod spec
+# Resource requests/limits prevent resource starvation
+# Liveness probe: if /health fails 3 times in 30s, restart the pod
+# Readiness probe: if /health fails, remove from service endpoints
+# Rolling update: max 25% surge, 25% unavailable (zero downtime)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rate-limiter
+  labels:
+    app: rate-limiter
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+  selector:
+    matchLabels:
+      app: rate-limiter
+  template:
+    metadata:
+      labels:
+        app: rate-limiter
+    spec:
+      containers:
+      - name: rate-limiter
+        image: clydeeshun94/rate-limiter:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        env:
+        - name: RLIMITER_PORT
+          value: "8080"
+        - name: RLIMITER_DEFAULT_LIMIT
+          value: "100"
+        - name: RLIMITER_LOG_LEVEL
+          value: "info"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 3
+          periodSeconds: 5

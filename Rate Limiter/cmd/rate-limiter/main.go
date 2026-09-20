@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/pprof"
+	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	limiter "rate-limiter/internal/limiter"
@@ -13,6 +18,7 @@ import (
 	"rate-limiter/internal/metrics"
 	"rate-limiter/internal/config"
 	"rate-limiter/pkg/logging"
+	"rate-limiter/middleware"
 )
 
 type service struct {
@@ -21,6 +27,7 @@ type service struct {
 	collector *metrics.Collector
 	logger    logging.Logger
 	config    config.ServerConfig
+	monitorLimiter limiter.RateLimiter
 }
 
 type checkRequest struct {
@@ -100,6 +107,8 @@ func newService() *service {
 		l.limits[algo] = defaultLimit
 	}
 
+	l.monitorLimiter = limiter.NewFixedWindowWithLimit(rate.NewMemoryStorage(), 100)
+
 	return l
 }
 
@@ -121,26 +130,51 @@ func (s *service) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := l.Check(req.Identity, req.Policy)
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	type checkResult struct {
+		result limiter.Result
+		err    error
+	}
+	ch := make(chan checkResult, 1)
+	go func() {
+		res, err := l.Check(req.Identity, req.Policy)
+		ch <- checkResult{result: res, err: err}
+	}()
+
+	var res limiter.Result
+	var err error
+	select {
+	case cr := <-ch:
+		res = cr.result
+		err = cr.err
+	case <-ctx.Done():
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusGatewayTimeout)
+		json.NewEncoder(w).Encode(checkResponse{Allowed: true})
+		return
+	}
+
 	if err != nil {
 		http.Error(w, fmt.Sprintf("check failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	resp := checkResponse{
-		Allowed:    result.Allowed,
-		Limit:      result.Limit,
-		Remaining:  result.Remaining,
-		RetryAfter: result.RetryAfter,
-		ResetTime:  result.ResetTime.Format(time.RFC3339),
+		Allowed:    res.Allowed,
+		Limit:      res.Limit,
+		Remaining:  res.Remaining,
+		RetryAfter: res.RetryAfter,
+		ResetTime:  res.ResetTime.Format(time.RFC3339),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(result.Limit))
-	w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(result.Remaining))
-	w.Header().Set("X-RateLimit-Reset", result.ResetTime.Format(time.RFC3339))
-	if result.RetryAfter > 0 {
-		w.Header().Set("Retry-After", strconv.FormatInt(int64(result.RetryAfter.Seconds()), 10))
+	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(res.Limit))
+	w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
+	w.Header().Set("X-RateLimit-Reset", res.ResetTime.Format(time.RFC3339))
+	if res.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.FormatInt(int64(res.RetryAfter.Seconds()), 10))
 	}
 
 	json.NewEncoder(w).Encode(resp)
@@ -309,15 +343,87 @@ func (s *service) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 func main() {
 	svc := newService()
 
-	http.HandleFunc("/check", svc.handleCheck)
-	http.HandleFunc("/limit", svc.authMiddleware(svc.handleLimit))
-	http.HandleFunc("/limits", svc.authMiddleware(svc.handleLimits))
-	http.HandleFunc("/config", svc.authMiddleware(svc.handleConfig))
-	http.HandleFunc("/metrics", svc.handleMetrics)
-	http.HandleFunc("/health", svc.handleHealth)
+	corsOrigin := os.Getenv("CORS_ORIGIN")
+	if corsOrigin == "" {
+		corsOrigin = "*"
+	}
+	corsMethods := os.Getenv("CORS_METHODS")
+	if corsMethods == "" {
+		corsMethods = "GET, POST, OPTIONS"
+	}
+	corsHeaders := os.Getenv("CORS_HEADERS")
+	if corsHeaders == "" {
+		corsHeaders = "Content-Type, Authorization, X-RateLimit-*"
+	}
+
+	router := http.NewServeMux()
+
+	router.HandleFunc("/check", svc.handleCheck)
+	router.HandleFunc("/limit", svc.authMiddleware(svc.handleLimit))
+	router.HandleFunc("/limits", svc.authMiddleware(svc.handleLimits))
+	router.HandleFunc("/config", svc.authMiddleware(svc.handleConfig))
+
+	healthLimiter := limiter.NewFixedWindowWithLimit(rate.NewMemoryStorage(), 1000)
+	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		allowed, _ := healthLimiter.Check("health-check", limiter.Policy{Limit: 1000, Window: 60 * time.Second})
+		if !allowed.Allowed {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			return
+		}
+		svc.handleHealth(w, r)
+	})
+
+	metricsLimiter := limiter.NewFixedWindowWithLimit(rate.NewMemoryStorage(), 100)
+	router.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		allowed, _ := metricsLimiter.Check("metrics-scraper", limiter.Policy{Limit: 100, Window: 60 * time.Second})
+		if !allowed.Allowed {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			return
+		}
+		svc.handleMetrics(w, r)
+	})
+
+	enablePprof := os.Getenv("ENABLE_PPROF") == "true"
+	if enablePprof {
+		router.HandleFunc("/debug/pprof/", pprof.Index)
+		router.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		router.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		router.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		router.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	}
+
+	corsHandler := middleware.CORS(corsOrigin, corsMethods, corsHeaders)(router)
 
 	port := svc.config.Port
 	addr := ":" + strconv.Itoa(port)
 	log.Printf("rate-limiter service starting on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, nil))
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           corsHandler,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	go func() {
+		if tlsCert := os.Getenv("TLS_CERT"); tlsCert != "" {
+			if tlsKey := os.Getenv("TLS_KEY"); tlsKey != "" {
+				log.Fatal(srv.ListenAndServeTLS(tlsCert, tlsKey))
+			}
+		}
+		log.Fatal(srv.ListenAndServe())
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
+	<-stop
+
+	log.Println("shutting down gracefully...")
+	ctxShutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	srv.Shutdown(ctxShutdown)
+	log.Println("shutdown complete")
 }

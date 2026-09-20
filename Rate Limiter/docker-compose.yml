@@ -1,0 +1,46 @@
+# docker-compose.yml — Prometheus + Grafana observability stack
+# Prometheus scrapes /metrics from the rate limiter service
+# Grafana reads Prometheus as a data source and renders dashboards
+services:
+  rate-limiter:
+    build:
+      context: .
+      dockerfile: cmd/rate-limiter/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - RLIMITER_PORT=8080
+      - RLIMITER_LOG_LEVEL=info
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    depends_on:
+      - rate-limiter
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana-dashboard.json:/etc/grafana/provisioning/dashboards/rate-limiter.json
+
+volumes:
+  prometheus-data:
+  grafana-data:
