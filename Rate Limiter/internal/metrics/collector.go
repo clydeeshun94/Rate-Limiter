@@ -55,6 +55,25 @@ func (c *Collector) SetLimit(algorithm string, limit int) { // SetLimit: updates
 	c.limits[algorithm] = limit // store limit for this algorithm name
 }
 
+// Snapshot returns a JSON-serializable snapshot of all collector data. // Snapshot: analytics-friendly format
+func (c *Collector) Snapshot() map[string]interface{} { // Snapshot: returns map for JSON marshaling
+	c.mu.Lock() // c.mu.Lock(): acquire lock for consistent read
+	defer c.mu.Unlock() // defer c.mu.Unlock(): release lock when done
+
+	avgDuration := 0.0 // avgDuration: computed average check duration
+	if c.totalChecks > 0 { // avoid division by zero
+		avgDuration = c.totalDuration / float64(c.totalChecks) // average in seconds
+	}
+
+	return map[string]interface{}{ // return: complete snapshot as map
+		"allowed_total":  c.allowedTotal, // allowed_total: per-identity allowed counts
+		"denied_total":   c.deniedTotal,  // denied_total: per-identity denied counts
+		"total_checks":   c.totalChecks,  // total_checks: total check count
+		"avg_duration_s": avgDuration,    // avg_duration_s: mean check duration in seconds
+		"limits":         c.limits,       // limits: current limit per algorithm
+	}
+}
+
 // ToPrometheusText returns metrics in Prometheus text exposition format. // ToPrometheusText: scrapable format for Prometheus
 func (c *Collector) ToPrometheusText() string { // ToPrometheusText: builds complete Prometheus text output
 	c.mu.Lock() // c.mu.Lock(): acquire lock for consistent read

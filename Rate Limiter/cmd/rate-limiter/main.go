@@ -17,6 +17,8 @@ import (
 	rate "rate-limiter/internal/storage"
 	"rate-limiter/internal/metrics"
 	"rate-limiter/internal/config"
+	"rate-limiter/internal/adjuster"
+	"rate-limiter/internal/analytics"
 	"rate-limiter/pkg/logging"
 	"rate-limiter/middleware"
 )
@@ -25,6 +27,7 @@ type service struct {
 	limiters  map[string]limiter.RateLimiter
 	limits    map[string]int
 	collector *metrics.Collector
+	adjuster  *adjuster.Adjuster
 	logger    logging.Logger
 	config    config.ServerConfig
 	monitorLimiter limiter.RateLimiter
@@ -108,6 +111,35 @@ func newService() *service {
 	}
 
 	l.monitorLimiter = limiter.NewFixedWindowWithLimit(rate.NewMemoryStorage(), 100)
+
+	limiters := make([]limiter.LimitSetter, 0, len(l.limiters))
+	for _, rl := range l.limiters {
+		if setter, ok := rl.(limiter.LimitSetter); ok {
+			limiters = append(limiters, setter)
+		}
+	}
+
+	// Adjuster: automatically adjusts rate limits based on traffic patterns.
+	// Reads ErrorRate and ResponseTime from CollectorProvider every 30s.
+	// Starts at conservative strategy (10% max change), 5min between adjustments.
+	// Max limit = defaultLimit * 2 (allows doubling under good conditions).
+	// If initialization fails, rate limiter runs without auto-adjustment.
+	provider := analytics.NewCollectorProvider(collector)
+	logger := config.NewLogger(cfg.LogLevel)
+	adj, err := adjuster.NewAdjuster(limiters, provider, adjuster.AdjusterConfig{
+		MetricsToWatch: []string{"ErrorRate", "ResponseTime"},
+		Interval:       30 * time.Second,
+		StableDuration: 5 * time.Minute,
+		MinLimit:       1,
+		MaxLimit:       defaultLimit * 2,
+		Logger:         logger,
+	})
+	if err == nil {
+		adj.Start()
+		l.adjuster = adj
+	} else {
+		logger.Warn("adjuster disabled", map[string]interface{}{"error": err.Error()})
+	}
 
 	return l
 }
@@ -325,6 +357,25 @@ func (s *service) handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
+// handleAnalytics returns a JSON snapshot of rate limiter health.
+// Includes collector metrics (allowed/denied counts, total checks, avg duration)
+// and adjuster status (whether auto-adjustment is active).
+// Designed for monitoring dashboards and external observability tools.
+func (s *service) handleAnalytics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	snap := s.collector.Snapshot()
+	result := map[string]interface{}{
+		"collector": snap,
+		"adjuster":  map[string]interface{}{"running": s.adjuster != nil},
+	}
+	if s.adjuster != nil {
+		result["adjuster"] = map[string]interface{}{
+			"running": true,
+		}
+	}
+	json.NewEncoder(w).Encode(result)
+}
+
 func (s *service) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         if s.config.AuthToken == "" {
@@ -362,6 +413,7 @@ func main() {
 	router.HandleFunc("/limit", svc.authMiddleware(svc.handleLimit))
 	router.HandleFunc("/limits", svc.authMiddleware(svc.handleLimits))
 	router.HandleFunc("/config", svc.authMiddleware(svc.handleConfig))
+	router.HandleFunc("/analytics", svc.handleAnalytics)
 
 	healthLimiter := limiter.NewFixedWindowWithLimit(rate.NewMemoryStorage(), 1000)
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
