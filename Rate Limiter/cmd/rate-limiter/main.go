@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/http/pprof"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -411,6 +414,76 @@ func (s *service) handleAdminEnable(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "enabled"})
 }
 
+func (s *service) handleCrash(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	concurrent := 50
+	if c := r.URL.Query().Get("concurrent"); c != "" {
+		if n, err := strconv.Atoi(c); err == nil && n > 0 {
+			concurrent = n
+		}
+	}
+
+	duration := 5 * time.Second
+	if d := r.URL.Query().Get("duration"); d != "" {
+		if parsed, err := time.ParseDuration(d); err == nil && parsed > 0 {
+			duration = parsed
+		}
+	}
+
+	target := r.URL.Query().Get("url")
+	if target == "" {
+		target = "http://localhost:5175/api/shorten"
+	}
+
+	var total int64
+	var errs int64
+
+	ctx, cancel := context.WithTimeout(r.Context(), duration)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	for i := 0; i < concurrent; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			client := &http.Client{Timeout: 3 * time.Second}
+			body := fmt.Sprintf(`{"url":"https://barrage-test-%d.com"}`, rand.Int63())
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(body))
+					if err != nil {
+						atomic.AddInt64(&errs, 1)
+						continue
+					}
+					req.Header.Set("Content-Type", "application/json")
+					resp, err := client.Do(req)
+					if err != nil {
+						atomic.AddInt64(&errs, 1)
+						continue
+					}
+					resp.Body.Close()
+					atomic.AddInt64(&total, 1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":        "complete",
+		"total_requests": total,
+		"errors":        errs,
+	})
+}
+
 func (s *service) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         if s.config.AuthToken == "" {
@@ -448,6 +521,7 @@ func main() {
 	router.HandleFunc("/check", svc.handleCheck)
 	router.HandleFunc("/admin/disable", svc.handleAdminDisable)
 	router.HandleFunc("/admin/enable", svc.handleAdminEnable)
+	router.HandleFunc("/crash", svc.handleCrash)
 	router.HandleFunc("/limit", svc.authMiddleware(svc.handleLimit))
 	router.HandleFunc("/limits", svc.authMiddleware(svc.handleLimits))
 	router.HandleFunc("/config", svc.authMiddleware(svc.handleConfig))
