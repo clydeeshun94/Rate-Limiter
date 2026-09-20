@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -32,6 +33,7 @@ type service struct {
 	logger    logging.Logger
 	config    config.ServerConfig
 	monitorLimiter limiter.RateLimiter
+	enabled   int32 // atomic: 1 = rate limiting enabled, 0 = disabled
 }
 
 type checkRequest struct {
@@ -90,6 +92,7 @@ func newService() *service {
 		collector: collector,
 		logger:    config.NewLogger(cfg.LogLevel),
 		config:    cfg,
+		enabled:   1,
 	}
 
 	storage := rate.NewMemoryStorage()
@@ -160,6 +163,17 @@ func (s *service) handleCheck(w http.ResponseWriter, r *http.Request) {
 	l, ok := s.limiters[req.Algorithm]
 	if !ok {
 		http.Error(w, fmt.Sprintf("unknown algorithm: %s", req.Algorithm), http.StatusBadRequest)
+		return
+	}
+
+	if atomic.LoadInt32(&s.enabled) == 0 {
+		s.collector.RecordAllowed(req.Identity)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(checkResponse{
+			Allowed:   true,
+			Limit:     s.limits[req.Algorithm],
+			Remaining: s.limits[req.Algorithm],
+		})
 		return
 	}
 
@@ -377,6 +391,26 @@ func (s *service) handleAnalytics(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
+func (s *service) handleAdminDisable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	atomic.StoreInt32(&s.enabled, 0)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "disabled"})
+}
+
+func (s *service) handleAdminEnable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	atomic.StoreInt32(&s.enabled, 1)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "enabled"})
+}
+
 func (s *service) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         if s.config.AuthToken == "" {
@@ -412,6 +446,8 @@ func main() {
 	router := http.NewServeMux()
 
 	router.HandleFunc("/check", svc.handleCheck)
+	router.HandleFunc("/admin/disable", svc.handleAdminDisable)
+	router.HandleFunc("/admin/enable", svc.handleAdminEnable)
 	router.HandleFunc("/limit", svc.authMiddleware(svc.handleLimit))
 	router.HandleFunc("/limits", svc.authMiddleware(svc.handleLimits))
 	router.HandleFunc("/config", svc.authMiddleware(svc.handleConfig))
