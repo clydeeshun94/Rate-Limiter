@@ -1,0 +1,14 @@
+# prometheus.yml — Prometheus scrape configuration
+# Points Prometheus at the rate limiter's /metrics endpoint
+# 15s interval matches typical rate limiter check frequency
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'rate-limiter'
+    static_configs:
+      - targets: ['rate-limiter:8080']
+    scrape_interval: 15s
+    metrics_path: '/metrics'
+    scheme: http

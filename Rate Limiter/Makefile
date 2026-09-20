@@ -32,3 +32,10 @@ vet:
 # clean: remove all built binaries from previous build-all
 clean:
 	rm -f $(BINARY)-linux-amd64 $(BINARY)-linux-arm64 $(BINARY)-darwin-amd64 $(BINARY)-darwin-arm64 $(BINARY)-windows-amd64.exe $(BINARY)
+
+# release: build all platform binaries and create GitHub Release (requires VERSION env var)
+release: build-all
+	gh release create $(VERSION) \
+		--title "$(VERSION)" \
+		--notes "Release $(VERSION)" \
+		$(wildcard rate-limiter-*)
