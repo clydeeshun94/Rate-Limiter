@@ -1,2 +1,3 @@
 rate-limiter.exe
 /rate-limiter
+.env

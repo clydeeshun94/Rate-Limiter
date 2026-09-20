@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	limiter "rate-limiter/internal/limiter"
 	rate "rate-limiter/internal/storage"
 	"rate-limiter/internal/metrics"
@@ -392,6 +393,7 @@ func (s *service) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func main() {
+	godotenv.Load()
 	svc := newService()
 
 	corsOrigin := os.Getenv("CORS_ORIGIN")
