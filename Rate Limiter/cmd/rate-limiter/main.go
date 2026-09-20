@@ -36,7 +36,8 @@ type service struct {
 	logger    logging.Logger
 	config    config.ServerConfig
 	monitorLimiter limiter.RateLimiter
-	enabled   int32 // atomic: 1 = rate limiting enabled, 0 = disabled
+	enabled   int32
+	wsHub     *wsHub
 }
 
 type checkRequest struct {
@@ -96,6 +97,7 @@ func newService() *service {
 		logger:    config.NewLogger(cfg.LogLevel),
 		config:    cfg,
 		enabled:   1,
+		wsHub:     newWSHub(collector),
 	}
 
 	storage := rate.NewMemoryStorage()
@@ -526,6 +528,7 @@ func main() {
 	router.HandleFunc("/limits", svc.authMiddleware(svc.handleLimits))
 	router.HandleFunc("/config", svc.authMiddleware(svc.handleConfig))
 	router.HandleFunc("/analytics", svc.handleAnalytics)
+	router.HandleFunc("/ws/metrics", svc.handleWSMetrics)
 
 	healthLimiter := limiter.NewFixedWindowWithLimit(rate.NewMemoryStorage(), 1000)
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -586,6 +589,7 @@ func main() {
 	<-stop
 
 	log.Println("shutting down gracefully...")
+	svc.wsHub.stopHub()
 	ctxShutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	srv.Shutdown(ctxShutdown)
