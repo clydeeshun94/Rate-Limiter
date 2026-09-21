@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/pprof"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -495,7 +496,9 @@ func (s *service) handleCrash(w http.ResponseWriter, r *http.Request) {
 		wg.Wait()
 		cancel()
 
-		alive := s.isTargetAlive(target + "/health", checkTimeout)
+		targetURL, _ := url.Parse(target)
+		targetURL.Path = "health"
+		alive := s.isTargetAlive(targetURL.String(), checkTimeout)
 
 		results = append(results, roundResult{
 			round:         round,
@@ -621,7 +624,7 @@ func main() {
 		Addr:              addr,
 		Handler:           corsHandler,
 		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      10 * time.Second,
+		WriteTimeout:      120 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 
