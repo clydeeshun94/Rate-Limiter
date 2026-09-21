@@ -574,9 +574,9 @@ func main() {
 	router := http.NewServeMux()
 
 	router.HandleFunc("/check", svc.handleCheck)
-	router.HandleFunc("/admin/disable", svc.handleAdminDisable)
-	router.HandleFunc("/admin/enable", svc.handleAdminEnable)
-	router.HandleFunc("/crash", svc.handleCrash)
+	router.HandleFunc("/admin/disable", svc.authMiddleware(svc.handleAdminDisable))
+	router.HandleFunc("/admin/enable", svc.authMiddleware(svc.handleAdminEnable))
+	router.HandleFunc("/crash", svc.authMiddleware(svc.handleCrash))
 	router.HandleFunc("/limit", svc.authMiddleware(svc.handleLimit))
 	router.HandleFunc("/limits", svc.authMiddleware(svc.handleLimits))
 	router.HandleFunc("/config", svc.authMiddleware(svc.handleConfig))

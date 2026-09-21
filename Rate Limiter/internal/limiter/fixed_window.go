@@ -5,6 +5,7 @@ import ( // import: standard library imports
 	"time" // time: provides time-related functions for window calculations
 
 	rate "rate-limiter/internal/storage" // rate: import storage package as rate for Record type
+	pol "rate-limiter/internal/policy" // pol: policy validation package
 )
 
 type FixedWindow struct { // FixedWindow: fixed window rate limiter implementation
@@ -27,6 +28,10 @@ func (fw *FixedWindow) SetLimit(limit int) { // SetLimit: updates the rate limit
 }
 
 func (fw *FixedWindow) Check(identity string, policy Policy) (Result, error) { // Check: main method to check if a request is allowed for the given identity
+	if err := pol.Validate(policy.Limit, policy.Window); err != nil {
+		return Result{}, err
+	}
+
 	fw.mu.Lock() // fw.mu.Lock(): acquire lock to protect limit reads and storage operations
 	defer fw.mu.Unlock() // defer fw.mu.Unlock(): ensure lock is released after check completes
 
@@ -111,3 +116,4 @@ ARCHITECTURAL / ENGINEERING DECISIONS
    - The Check() method holds the mutex for its entire duration.
    - Decision: the operation is a simple Get + Compare + Set, which is very fast (microseconds). Holding the lock for the entire operation avoids race conditions without needing more complex patterns like CAS or optimistic locking.
 */
+

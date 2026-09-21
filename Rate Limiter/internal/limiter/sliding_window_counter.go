@@ -5,6 +5,7 @@ import ( // import: standard library imports
 	"time" // time: provides time-related functions for window calculations
 
 	rate "rate-limiter/internal/storage" // rate: import storage package as rate for Record type
+	pol "rate-limiter/internal/policy" // pol: policy validation package
 )
 
 type SlidingWindowCounter struct { // SlidingWindowCounter: sliding window counter rate limiter implementation
@@ -27,6 +28,10 @@ func (sw *SlidingWindowCounter) SetLimit(limit int) { // SetLimit: updates the r
 }
 
 func (sw *SlidingWindowCounter) Check(identity string, policy Policy) (Result, error) { // Check: main method to check if a request is allowed for the given identity using sliding window counter
+	if err := pol.Validate(policy.Limit, policy.Window); err != nil {
+		return Result{}, err
+	}
+
 	sw.mu.Lock() // sw.mu.Lock(): acquire lock to protect limit reads and storage operations
 	defer sw.mu.Unlock() // defer sw.mu.Unlock(): ensure lock is released after check completes
 

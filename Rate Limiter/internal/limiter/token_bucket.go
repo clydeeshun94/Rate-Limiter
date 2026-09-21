@@ -5,6 +5,7 @@ import ( // import: standard library imports
 	"time" // time: provides time-related functions for window calculations
 
 	rate "rate-limiter/internal/storage" // rate: import storage package as rate for Record type
+	pol "rate-limiter/internal/policy" // pol: policy validation package
 )
 
 type TokenBucket struct { // TokenBucket: token bucket rate limiter implementation
@@ -29,6 +30,10 @@ func (tb *TokenBucket) SetLimit(limit int) { // SetLimit: updates the rate limit
 }
 
 func (tb *TokenBucket) Check(identity string, policy Policy) (Result, error) { // Check: main method to check if a request is allowed for the given identity using token bucket algorithm
+	if err := pol.Validate(policy.Limit, policy.Window); err != nil {
+		return Result{}, err
+	}
+
 	tb.mu.Lock() // tb.mu.Lock(): acquire lock to protect token reads/writes and storage operations
 	defer tb.mu.Unlock() // defer tb.mu.Unlock(): ensure lock is released after check completes
 

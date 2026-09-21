@@ -5,6 +5,7 @@ import ( // import: standard library imports
 	"time" // time: provides time-related functions for window calculations
 
 	rate "rate-limiter/internal/storage" // rate: import storage package as rate for Record type
+	pol "rate-limiter/internal/policy" // pol: policy validation package
 )
 
 type LeakyBucket struct { // LeakyBucket: leaky bucket rate limiter implementation (processes requests at a constant rate)
@@ -29,6 +30,10 @@ func (lb *LeakyBucket) SetLimit(limit int) { // SetLimit: updates the rate limit
 }
 
 func (lb *LeakyBucket) Check(identity string, policy Policy) (Result, error) { // Check: main method to check if a request is allowed for the given identity using leaky bucket algorithm
+	if err := pol.Validate(policy.Limit, policy.Window); err != nil {
+		return Result{}, err
+	}
+
 	lb.mu.Lock() // lb.mu.Lock(): acquire lock to protect water reads/writes and storage operations
 	defer lb.mu.Unlock() // defer lb.mu.Unlock(): ensure lock is released after check completes
 
