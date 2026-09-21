@@ -35,7 +35,7 @@ func TestAdjuster_WithAlgorithmAndStorage(t *testing.T) {
 	}
 
 	ml.Check("alice", limiter.Policy{Limit: 10, Window: 60 * time.Second})
-	_, exists := storage.Get("alice")
+	_, exists, _ := storage.Get("alice")
 	if !exists {
 		t.Fatal("expected storage to have record for alice after check")
 	}
@@ -112,7 +112,7 @@ func TestAdjuster_WithSlidingWindowLog(t *testing.T) {
 	}
 
 	l.Check("frank", limiter.Policy{Limit: 10, Window: 60 * time.Second})
-	record, exists := storage.Get("frank")
+	record, exists, _ := storage.Get("frank")
 	if !exists {
 		t.Fatal("expected storage to have record for frank")
 	}

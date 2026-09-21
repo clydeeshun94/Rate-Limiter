@@ -15,12 +15,12 @@ func NewMemoryStorage() *MemoryStorage { // NewMemoryStorage: returns pointer to
 	}
 }
 
-// Get retrieves a record by key from memory. // Get: thread-safe lookup; returns record and existence flag
-func (s *MemoryStorage) Get(key string) (Record, bool) { // Get: O(1) map lookup with mutex protection
+// Get retrieves a record by key from memory. // Get: thread-safe lookup; returns record, existence flag, and error (always nil for in-memory)
+func (s *MemoryStorage) Get(key string) (Record, bool, error) { // Get: O(1) map lookup with mutex protection
 	s.mu.Lock() // s.mu.Lock(): acquire lock for read access
 	defer s.mu.Unlock() // defer s.mu.Unlock(): ensure lock released after read
 	record, exists := s.storage[key] // record, exists: map lookup (Go idiom for map access)
-	return record, exists // return: record value and whether key was found
+	return record, exists, nil // return: record value, whether key was found, nil error
 }
 
 // Set persists a record to memory. // Set: thread-safe write; stores record for given key

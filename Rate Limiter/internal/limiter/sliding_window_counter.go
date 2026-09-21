@@ -42,7 +42,10 @@ func (sw *SlidingWindowCounter) Check(identity string, policy Policy) (Result, e
 	prevWindowStart := windowStart - windowSeconds // prevWindowStart: start of the previous time window
 
 	key := identity // key: use identity string as the storage key (e.g., "create:alice")
-	record, exists := sw.storage.Get(key) // record, exists: retrieve existing record from storage for this identity
+	record, exists, err := sw.storage.Get(key) // record, exists, err: retrieve existing record from storage for this identity
+	if err != nil {
+		return Result{}, err
+	}
 
 	var currentCount int // currentCount: number of requests in the current window, calculated by blending windows
 	if !exists { // if no record exists for this identity

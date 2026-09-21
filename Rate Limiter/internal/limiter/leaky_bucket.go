@@ -42,7 +42,10 @@ func (lb *LeakyBucket) Check(identity string, policy Policy) (Result, error) { /
 	leakRate := float64(policy.Limit) / float64(windowSeconds) // leakRate: requests drained per second (constant outflow rate)
 
 	key := identity // key: use identity string as the bucket key
-	record, exists := lb.storage.Get(key) // record, exists: retrieve existing record from storage for this identity
+	record, exists, err := lb.storage.Get(key) // record, exists, err: retrieve existing record from storage for this identity
+	if err != nil {
+		return Result{}, err
+	}
 
 	if exists { // if a record exists for this identity
 		elapsed := float64(now - record.WindowStart) // elapsed: seconds since last recorded activity

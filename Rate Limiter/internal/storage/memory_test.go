@@ -13,7 +13,7 @@ func TestMemoryStorage_SetAndGet(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	record, exists := s.Get("key")
+	record, exists, _ := s.Get("key")
 	if !exists {
 		t.Fatal("expected key to exist")
 	}
@@ -30,7 +30,7 @@ func TestMemoryStorage_Delete(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	_, exists := s.Get("key")
+	_, exists, _ := s.Get("key")
 	if exists {
 		t.Fatal("expected key to be deleted")
 	}

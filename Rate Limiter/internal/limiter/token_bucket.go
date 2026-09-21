@@ -42,7 +42,10 @@ func (tb *TokenBucket) Check(identity string, policy Policy) (Result, error) { /
 	refillRate := float64(tb.limit) / float64(windowSeconds) // refillRate: tokens added per second (linear refill)
 
 	key := identity // key: use identity string as the token bucket key
-	record, exists := tb.storage.Get(key) // record, exists: retrieve existing record from storage for this identity
+	record, exists, err := tb.storage.Get(key) // record, exists, err: retrieve existing record from storage for this identity
+	if err != nil {
+		return Result{}, err
+	}
 
 	if exists && record.WindowStart != 0 { // if record exists and has a valid timestamp (not a new record)
 		elapsed := float64(now - record.WindowStart) // elapsed: seconds since last recorded activity

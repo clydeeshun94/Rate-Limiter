@@ -56,7 +56,7 @@ func TestLeakyBucket_StoragePersistsRecord(t *testing.T) { // TestLeakyBucket_St
 	l1 := limiter.NewLeakyBucketWithLimit(storage, 3) // l1: limiter instance
 	l1.Check("carol", policy) // carol: one request (allowed)
 
-	_, exists := storage.Get("carol") // check: does storage have a record for carol?
+	_, exists, _ := storage.Get("carol") // check: does storage have a record for carol?
 	if !exists { // if no record was persisted
 		t.Fatal("expected storage to have record for carol") // fail: storage not updated
 	}
@@ -71,7 +71,7 @@ func TestTokenBucket_StoragePersistsRecord(t *testing.T) { // TestTokenBucket_St
 	l1.Check("dave", policy) // dave: request 1 (allowed)
 	l1.Check("dave", policy) // dave: request 2 (allowed)
 
-	_, exists := storage.Get("dave") // check: does storage have a record for dave?
+	_, exists, _ := storage.Get("dave") // check: does storage have a record for dave?
 	if !exists { // if no record was persisted
 		t.Fatal("expected storage to have record for dave") // fail: storage not updated
 	}

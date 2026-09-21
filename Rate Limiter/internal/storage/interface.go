@@ -9,7 +9,7 @@ type Record struct { // Record: holds window position, request count, and timest
 
 // Storage defines the interface for persistent rate limiting state. // Storage: abstraction for storing/retrieving rate limit records
 type Storage interface { // Storage: interface implemented by MemoryStorage, RedisStorage, etc.
-	Get(key string) (Record, bool) // Get: retrieve record by key; bool indicates existence
+	Get(key string) (Record, bool, error) // Get: retrieve record by key; bool=existence, error=storage failure
 	Set(key string, record Record) error // Set: persist record; returns error on failure
 	Delete(key string) error // Delete: remove record by key; returns error on failure
 }
@@ -47,7 +47,9 @@ ARCHITECTURAL / ENGINEERING DECISIONS
    - Decision: each implementation handles concurrency independently.
 
 6. ERROR HANDLING
-   - Set and Delete return errors; Get returns (Record, bool) — no error for "not found" (handled by bool).
-   - Decision: Get uses bool for existence to avoid nil/error checks for the common "not found" case.
-   - Set returns error because persistence can fail (network, disk, etc.).
+    - Set and Delete return errors; Get returns (Record, bool, error).
+    - Decision: Get now propagates storage errors so callers can distinguish "not found" from "storage failure".
+    - MemoryStorage always returns nil error (in-memory, no I/O failure modes).
+    - RedisStorage returns error on network failures or Redis errors.
+    - Each caller decides fail-open vs fail-closed based on its needs.
 */

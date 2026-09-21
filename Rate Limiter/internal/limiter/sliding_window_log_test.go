@@ -70,7 +70,7 @@ func TestSlidingWindowLog_UsesStorageInterface(t *testing.T) {
 	l.Check("charlie", policy)
 	l.Check("charlie", policy)
 
-	record, exists := storage.Get("charlie")
+	record, exists, _ := storage.Get("charlie")
 	if !exists {
 		t.Fatal("expected storage to have record for charlie")
 	}
@@ -88,7 +88,7 @@ func TestSlidingWindowLog_StoragePersistsTimestamps(t *testing.T) {
 		l.Check("dave", policy)
 	}
 
-	record, exists := storage.Get("dave")
+	record, exists, _ := storage.Get("dave")
 	if !exists {
 		t.Fatal("expected storage to have record for dave")
 	}

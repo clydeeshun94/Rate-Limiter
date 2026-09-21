@@ -48,8 +48,8 @@ func (r *RedisStorage) retry(fn func() error) error { // retry: returns first ni
 	return err // return: last error after all retries exhausted
 }
 
-// Get retrieves a record from Redis by key. // Get: deserializes JSON record from Redis; handles missing keys
-func (r *RedisStorage) Get(key string) (Record, bool) { // Get: thread-safe Redis GET with retry and JSON deserialization
+// Get retrieves a record from Redis by key. // Get: deserializes JSON record from Redis; handles missing keys and failures
+func (r *RedisStorage) Get(key string) (Record, bool, error) { // Get: thread-safe Redis GET with retry and JSON deserialization
 	var record Record // record: deserialized result
 	var found bool // found: whether key exists in Redis
 	err := r.retry(func() error { // err: execute GET with retry logic
@@ -70,9 +70,9 @@ func (r *RedisStorage) Get(key string) (Record, bool) { // Get: thread-safe Redi
 		return nil // return nil: success
 	})
 	if err != nil { // if retry exhausted or permanent failure
-		return Record{}, false // return empty record, false: caller treats as "not found"
+		return Record{}, false, err // return empty record, false, error: caller can choose fail-open or fail-closed
 	}
-	return record, found // return: deserialized record and existence flag
+	return record, found, nil // return: deserialized record, existence flag, nil error
 }
 
 // Set persists a record to Redis with TTL. // Set: serializes Record to JSON and stores in Redis with auto-expiry
@@ -86,7 +86,42 @@ func (r *RedisStorage) Set(key string, record Record) error { // Set: JSON marsh
 	})
 }
 
-// Delete removes a record from Redis by key. // Delete: removes key from Redis with retry logic
+// CheckAndSet atomically checks the current count and increments it if under the limit.
+// Uses a Lua script for atomicity in Redis. Returns (allowed, currentCount, error).
+func (r *RedisStorage) CheckAndSet(key string, limit int, windowStart int64, windowSeconds int64) (bool, int, error) {
+	script := `
+		local data = redis.call('GET', KEYS[1])
+		local record
+		if data then
+			record = cjson.decode(data)
+		else
+			record = {WindowStart = "0", Count = 0}
+		end
+		if tostring(record.WindowStart) ~= tostring(ARGV[3]) then
+			record.WindowStart = tonumber(ARGV[3])
+			record.Count = 0
+		end
+		if record.Count >= tonumber(ARGV[2]) then
+			return {0, record.Count}
+		end
+		record.Count = record.Count + 1
+		redis.call('SET', KEYS[1], cjson.encode(record), 'EX', tonumber(ARGV[4]))
+		return {1, record.Count}
+	`
+	result, err := r.client.Eval(r.ctx, script, []string{key}, limit, windowStart, windowStart, windowSeconds).Result()
+	if err != nil {
+		return false, 0, err
+	}
+	resp, ok := result.([]interface{})
+	if !ok || len(resp) < 2 {
+		return false, 0, nil
+	}
+	allowed, _ := resp[0].(int64)
+	count, _ := resp[1].(int64)
+	return allowed == 1, int(count), nil
+}
+
+// Delete removes a record from Redis by key. // Delete: Redis DEL with retry
 func (r *RedisStorage) Delete(key string) error { // Delete: Redis DEL with retry
 	return r.retry(func() error { // return: execute DEL with retry
 		return r.client.Del(r.ctx, key).Err() // Del key; Err() returns error (not *Result)

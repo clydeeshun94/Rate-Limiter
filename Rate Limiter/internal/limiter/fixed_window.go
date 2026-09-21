@@ -39,7 +39,36 @@ func (fw *FixedWindow) Check(identity string, policy Policy) (Result, error) { /
 	windowStart := now - (now % int64(policy.Window.Seconds())) // windowStart: start of the current time window (truncate to window boundary)
 
 	key := identity // key: use identity string as the storage key (e.g., "create:alice")
-	record, exists := fw.storage.Get(key) // record, exists: retrieve existing record from storage for this identity
+	windowSeconds := int64(policy.Window.Seconds())
+
+	if redisStorage, ok := fw.storage.(*rate.RedisStorage); ok {
+		allowed, count, err := redisStorage.CheckAndSet(key, fw.limit, windowStart, windowSeconds)
+		if err != nil {
+			return Result{}, err
+		}
+		resetTime := time.Unix(windowStart+windowSeconds, 0)
+		if !allowed {
+			return Result{
+				Allowed:    false,
+				Limit:      fw.limit,
+				Remaining:  count,
+				RetryAfter: 0,
+				ResetTime:  resetTime,
+			}, nil
+		}
+		return Result{
+			Allowed:    true,
+			Limit:      fw.limit,
+			Remaining:  fw.limit - count,
+			RetryAfter: 0,
+			ResetTime:  resetTime,
+		}, nil
+	}
+
+	record, exists, err := fw.storage.Get(key) // record, exists, err: retrieve existing record from storage for this identity
+	if err != nil {
+		return Result{}, err
+	}
 
 	if !exists || record.WindowStart != windowStart { // if no record exists OR window has rolled over to a new period
 		record = rate.Record{ // record: create a fresh record for the new window

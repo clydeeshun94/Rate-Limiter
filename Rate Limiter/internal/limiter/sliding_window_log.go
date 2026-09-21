@@ -40,7 +40,10 @@ func (swl *SlidingWindowLog) Check(identity string, policy Policy) (Result, erro
 	cutoff := now - windowSeconds // cutoff: oldest timestamp that is still within the window (everything before cutoff is expired)
 
 	key := identity // key: use identity string as the storage key
-	record, exists := swl.storage.Get(key) // record, exists: retrieve existing record from storage for this identity
+	record, exists, err := swl.storage.Get(key) // record, exists, err: retrieve existing record from storage for this identity
+	if err != nil {
+		return Result{}, err
+	}
 
 	if !exists { // if no record exists for this identity
 		record = rate.Record{WindowStart: now, Timestamps: []int64{}} // record: create new empty record with current window start
