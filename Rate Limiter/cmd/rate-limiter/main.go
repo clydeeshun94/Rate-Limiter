@@ -422,17 +422,17 @@ func (s *service) handleCrash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	concurrent := 50
+	initialConcurrent := 50
 	if c := r.URL.Query().Get("concurrent"); c != "" {
 		if n, err := strconv.Atoi(c); err == nil && n > 0 {
-			concurrent = n
+			initialConcurrent = n
 		}
 	}
 
-	duration := 5 * time.Second
+	burstDuration := 5 * time.Second
 	if d := r.URL.Query().Get("duration"); d != "" {
 		if parsed, err := time.ParseDuration(d); err == nil && parsed > 0 {
-			duration = parsed
+			burstDuration = parsed
 		}
 	}
 
@@ -441,49 +441,99 @@ func (s *service) handleCrash(w http.ResponseWriter, r *http.Request) {
 		target = "http://localhost:5175/api/shorten"
 	}
 
-	var total int64
-	var errs int64
+	maxConcurrent := 800
+	pauseBetweenRounds := 3 * time.Second
+	checkTimeout := 3 * time.Second
 
-	ctx, cancel := context.WithTimeout(r.Context(), duration)
-	defer cancel()
-
-	var wg sync.WaitGroup
-	for i := 0; i < concurrent; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			client := &http.Client{Timeout: 3 * time.Second}
-			body := fmt.Sprintf(`{"url":"https://barrage-test-%d.com"}`, rand.Int63())
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-					req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(body))
-					if err != nil {
-						atomic.AddInt64(&errs, 1)
-						continue
-					}
-					req.Header.Set("Content-Type", "application/json")
-					resp, err := client.Do(req)
-					if err != nil {
-						atomic.AddInt64(&errs, 1)
-						continue
-					}
-					resp.Body.Close()
-					atomic.AddInt64(&total, 1)
-				}
-			}
-		}()
+	type roundResult struct {
+		round          int `json:"round"`
+		concurrent     int `json:"concurrent"`
+		totalRequests  int64 `json:"total_requests"`
+		errors         int64 `json:"errors"`
+		targetAlive    bool `json:"target_alive"`
 	}
-	wg.Wait()
+
+	var results []roundResult
+	var totalAll int64
+	var errorsAll int64
+
+	concurrent := initialConcurrent
+	for round := 1; concurrent <= maxConcurrent; round++ {
+		var total int64
+		var errs int64
+
+		ctx, cancel := context.WithTimeout(r.Context(), burstDuration)
+		var wg sync.WaitGroup
+		for i := 0; i < concurrent; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				client := &http.Client{Timeout: 3 * time.Second}
+				body := fmt.Sprintf(`{"url":"https://barrage-test-%d.com"}`, rand.Int63())
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+						req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(body))
+						if err != nil {
+							atomic.AddInt64(&errs, 1)
+							continue
+						}
+						req.Header.Set("Content-Type", "application/json")
+						resp, err := client.Do(req)
+						if err != nil {
+							atomic.AddInt64(&errs, 1)
+							continue
+						}
+						resp.Body.Close()
+						atomic.AddInt64(&total, 1)
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		cancel()
+
+		alive := s.isTargetAlive(target + "/health", checkTimeout)
+
+		results = append(results, roundResult{
+			round:         round,
+			concurrent:    concurrent,
+			totalRequests: total,
+			errors:        errs,
+			targetAlive:   alive,
+		})
+		totalAll += total
+		errorsAll += errs
+
+		if !alive {
+			break
+		}
+
+		concurrent *= 2
+		if concurrent <= maxConcurrent {
+			time.Sleep(pauseBetweenRounds)
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":        "complete",
-		"total_requests": total,
-		"errors":        errs,
+		"status":    "complete",
+		"total_requests": totalAll,
+		"errors":    errorsAll,
+		"rounds":    results,
 	})
+}
+
+func (s *service) isTargetAlive(url string, timeout time.Duration) bool {
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get(url)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode < 500
 }
 
 func (s *service) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
