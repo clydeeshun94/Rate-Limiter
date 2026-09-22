@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"rate-limiter/internal/policy"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -30,6 +32,7 @@ import (
 )
 
 type service struct {
+	mu        sync.RWMutex
 	limiters  map[string]limiter.RateLimiter
 	limits    map[string]int
 	collector *metrics.Collector
@@ -166,19 +169,23 @@ func (s *service) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.mu.RLock()
 	l, ok := s.limiters[req.Algorithm]
+	configuredLimit := s.limits[req.Algorithm]
+	s.mu.RUnlock()
 	if !ok {
 		http.Error(w, fmt.Sprintf("unknown algorithm: %s", req.Algorithm), http.StatusBadRequest)
-		return
+	return
 	}
 
+	req.Policy.Limit = configuredLimit
 	if atomic.LoadInt32(&s.enabled) == 0 {
 		s.collector.RecordAllowed(req.Identity)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(checkResponse{
 			Allowed:   true,
-			Limit:     s.limits[req.Algorithm],
-			Remaining: s.limits[req.Algorithm],
+				Limit:     configuredLimit,
+			Remaining: configuredLimit,
 		})
 		return
 	}
@@ -203,10 +210,8 @@ func (s *service) handleCheck(w http.ResponseWriter, r *http.Request) {
 		res = cr.result
 		err = cr.err
 	case <-ctx.Done():
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusGatewayTimeout)
-		json.NewEncoder(w).Encode(checkResponse{Allowed: true})
-		return
+		http.Error(w, "rate limiter check timed out", http.StatusGatewayTimeout)
+	return
 	}
 
 	if err != nil {
@@ -242,9 +247,15 @@ func (s *service) handleLimit(w http.ResponseWriter, r *http.Request) {
 	var req limitRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
-		return
+	return
+	}
+	if err := policy.Validate(req.Limit, time.Second); err != nil {
+		http.Error(w, fmt.Sprintf("invalid limit: %v", err), http.StatusBadRequest)
+	return
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	l, ok := s.limiters[req.Algorithm]
 	if !ok {
 		http.Error(w, fmt.Sprintf("unknown algorithm: %s", req.Algorithm), http.StatusBadRequest)
@@ -267,12 +278,14 @@ func (s *service) handleGetLimits(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var infos []limitInfo
+	s.mu.RLock()
 	for algo := range s.limiters {
-		infos = append(infos, limitInfo{
-			Algorithm: algo,
-			Limit:     s.limits[algo],
-		})
+	infos = append(infos, limitInfo{
+	Algorithm: algo,
+	Limit:     s.limits[algo],
+	})
 	}
+	s.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(limitsResponse{Limits: infos})
@@ -290,7 +303,13 @@ func (s *service) handleSetLimits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, lr := range req.Limits {
+	if err := policy.Validate(lr.Limit, time.Second); err != nil {
+			http.Error(w, fmt.Sprintf("invalid limit for %s: %v", lr.Algorithm, err), http.StatusBadRequest)
+			return
+		}
 		l, ok := s.limiters[lr.Algorithm]
 		if !ok {
 			http.Error(w, fmt.Sprintf("unknown algorithm: %s", lr.Algorithm), http.StatusBadRequest)
@@ -309,15 +328,18 @@ func (s *service) handleSetLimits(w http.ResponseWriter, r *http.Request) {
 func (s *service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
+	return
 	}
 
+	s.mu.RLock()
+	response := configResponse{
+	Port:         s.config.Port,
+	DefaultLimit: s.config.DefaultLimit,
+	Algorithms:   append([]string(nil), s.config.Algorithms...),
+	}
+	s.mu.RUnlock()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(configResponse{
-		Port:         s.config.Port,
-		DefaultLimit: s.config.DefaultLimit,
-		Algorithms:   s.config.Algorithms,
-	})
+	json.NewEncoder(w).Encode(response)
 }
 
 func (s *service) handleSetConfig(w http.ResponseWriter, r *http.Request) {
@@ -332,18 +354,51 @@ func (s *service) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Port > 0 {
-		s.config.Port = req.Port
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if req.Port > 0 && req.Port != s.config.Port {
+		http.Error(w, "port cannot be changed at runtime; restart the service", http.StatusBadRequest)
+	return
 	}
 	if req.DefaultLimit > 0 {
+	if err := policy.Validate(req.DefaultLimit, time.Second); err != nil {
+		http.Error(w, fmt.Sprintf("invalid default_limit: %v", err), http.StatusBadRequest)
+	return
+	}
 		s.config.DefaultLimit = req.DefaultLimit
+	for algorithm, current := range s.limiters {
+	if setter, ok := current.(limiter.LimitSetter); ok {
+	setter.SetLimit(req.DefaultLimit)
+		s.limits[algorithm] = req.DefaultLimit
+	}
+	}
 	}
 	if len(req.Algorithms) > 0 {
-		s.config.Algorithms = req.Algorithms
+	if !sameAlgorithms(req.Algorithms, s.config.Algorithms) {
+		http.Error(w, "algorithms cannot be changed at runtime", http.StatusBadRequest)
+	return
+	}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "config updated"})
+}
+
+func sameAlgorithms(left, right []string) bool {
+	if len(left) != len(right) {
+	return false
+	}
+	seen := make(map[string]int, len(left))
+	for _, algorithm := range left {
+	seen[algorithm]++
+	}
+	for _, algorithm := range right {
+	seen[algorithm]--
+	if seen[algorithm] < 0 {
+	return false
+	}
+	}
+	return true
 }
 
 func (s *service) handleLimits(w http.ResponseWriter, r *http.Request) {
@@ -540,18 +595,24 @@ func (s *service) isTargetAlive(url string, timeout time.Duration) bool {
 }
 
 func (s *service) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        if s.config.AuthToken == "" {
-            next(w, r)
-            return
-        }
-        token := r.Header.Get("Authorization")
-        if token != s.config.AuthToken {
-            http.Error(w, "unauthorized", http.StatusUnauthorized)
-            return
-        }
-        next(w, r)
-    }
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.mu.RLock()
+		expected := s.config.AuthToken
+		s.mu.RUnlock()
+	if expected == "" {
+		next(w, r)
+	return
+	}
+		token := r.Header.Get("Authorization")
+	if strings.HasPrefix(token, "Bearer ") {
+		token = strings.TrimSpace(strings.TrimPrefix(token, "Bearer "))
+	}
+	if token == "" || len(token) != len(expected) || subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	return
+	}
+		next(w, r)
+	}
 }
 
 func main() {

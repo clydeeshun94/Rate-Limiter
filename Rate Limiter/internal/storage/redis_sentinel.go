@@ -28,7 +28,7 @@ func NewRedisSentinelStorage(masterName string, sentinelAddrs []string, password
 	}
 }
 
-func (r *RedisSentinelStorage) Get(key string) (Record, bool) {
+func (r *RedisSentinelStorage) Get(key string) (Record, bool, error) {
 	var record Record
 	var found bool
 	err := r.retry(func() error {
@@ -49,9 +49,9 @@ func (r *RedisSentinelStorage) Get(key string) (Record, bool) {
 		return nil
 	})
 	if err != nil {
-		return Record{}, false
+		return Record{}, false, err
 	}
-	return record, found
+	return record, found, nil
 }
 
 func (r *RedisSentinelStorage) Set(key string, record Record) error {

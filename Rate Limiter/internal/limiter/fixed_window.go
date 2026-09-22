@@ -21,6 +21,14 @@ func NewFixedWindowWithLimit(storage rate.Storage, limit int) *FixedWindow { // 
 	}
 }
 
+func maxRemaining(limit, count int) int {
+	remaining := limit - count
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
 func (fw *FixedWindow) SetLimit(limit int) { // SetLimit: updates the rate limit dynamically (thread-safe)
 	fw.mu.Lock() // fw.mu.Lock(): acquire lock to protect limit field from concurrent writes
 	defer fw.mu.Unlock() // defer fw.mu.Unlock(): ensure lock is released when function exits
@@ -47,19 +55,23 @@ func (fw *FixedWindow) Check(identity string, policy Policy) (Result, error) { /
 			return Result{}, err
 		}
 		resetTime := time.Unix(windowStart+windowSeconds, 0)
-		if !allowed {
-			return Result{
-				Allowed:    false,
-				Limit:      fw.limit,
-				Remaining:  count,
-				RetryAfter: 0,
-				ResetTime:  resetTime,
-			}, nil
+			if !allowed {
+			retryAfter := time.Until(resetTime)
+		if retryAfter < 0 {
+			retryAfter = 0
+		}
+		return Result{
+		Allowed:    false,
+		Limit:      fw.limit,
+		Remaining:  maxRemaining(fw.limit, count),
+		RetryAfter: retryAfter,
+		ResetTime:  resetTime,
+		}, nil
 		}
 		return Result{
 			Allowed:    true,
 			Limit:      fw.limit,
-			Remaining:  fw.limit - count,
+				Remaining:  maxRemaining(fw.limit, count),
 			RetryAfter: 0,
 			ResetTime:  resetTime,
 		}, nil
@@ -86,14 +98,16 @@ func (fw *FixedWindow) Check(identity string, policy Policy) (Result, error) { /
 		return Result{ // return: deny the request with rate limit info
 			Allowed:    false, // Allowed: request denied
 			Limit:      fw.limit, // Limit: the configured limit
-			Remaining:  record.Count, // Remaining: how many requests were used this window
+			Remaining:  maxRemaining(fw.limit, record.Count), // Remaining: how many requests remain this window
 			RetryAfter: retryAfter, // RetryAfter: seconds until window resets
 			ResetTime:  resetTime, // ResetTime: when the window resets
 		}, nil // nil: no error
 	}
 
 	record.Count++ // record.Count++: increment request count (allow the request)
-	fw.storage.Set(key, record) // fw.storage.Set: persist updated record to storage
+	if err := fw.storage.Set(key, record); err != nil {
+	return Result{}, err
+	}
 
 	resetTime := time.Unix(windowStart+int64(policy.Window.Seconds()), 0) // resetTime: calculate when the current window resets
 

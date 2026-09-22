@@ -9,22 +9,20 @@ import ( // import: standard library imports
 )
 
 type LeakyBucket struct { // LeakyBucket: leaky bucket rate limiter implementation (processes requests at a constant rate)
-	storage  rate.Storage // storage: persistent storage for rate records
-	limit    int          // limit: maximum water level (request queue capacity)
-	water    map[string]int // water: per-identity current water level (in-memory cache)
-	mu       sync.Mutex  // mu: mutex for thread-safe access to water map and limit field
+	storage rate.Storage // storage: persistent storage for rate records
+	limit   int          // limit: maximum water level (request queue capacity)
+	mu      sync.Mutex  // mu: mutex for thread-safe access to limit field
 }
 
 func NewLeakyBucketWithLimit(storage rate.Storage, limit int) *LeakyBucket { // NewLeakyBucketWithLimit: constructor, creates a new LeakyBucket with given storage and limit
 	return &LeakyBucket{ // return: return pointer to new LeakyBucket instance
 		storage: storage, // storage: assign storage implementation
 		limit:   limit,   // limit: assign max water level (queue capacity)
-		water:   make(map[string]int), // water: initialize empty water map per identity
 	}
 }
 
 func (lb *LeakyBucket) SetLimit(limit int) { // SetLimit: updates the rate limit dynamically (thread-safe)
-	lb.mu.Lock() // lb.mu.Lock(): acquire lock to protect limit and water fields
+	lb.mu.Lock() // lb.mu.Lock(): acquire lock to protect limit field
 	defer lb.mu.Unlock() // defer lb.mu.Unlock(): ensure lock is released when function exits
 	lb.limit = limit // lb.limit = limit: update the water capacity
 }
@@ -34,7 +32,7 @@ func (lb *LeakyBucket) Check(identity string, policy Policy) (Result, error) { /
 		return Result{}, err
 	}
 
-	lb.mu.Lock() // lb.mu.Lock(): acquire lock to protect water reads/writes and storage operations
+	lb.mu.Lock() // lb.mu.Lock(): acquire lock to protect limit reads and storage operations
 	defer lb.mu.Unlock() // defer lb.mu.Unlock(): ensure lock is released after check completes
 
 	now := time.Now().Unix() // now: current Unix timestamp in seconds
@@ -42,40 +40,56 @@ func (lb *LeakyBucket) Check(identity string, policy Policy) (Result, error) { /
 	leakRate := float64(policy.Limit) / float64(windowSeconds) // leakRate: requests drained per second (constant outflow rate)
 
 	key := identity // key: use identity string as the bucket key
+	if atomicStorage, ok := lb.storage.(rate.AtomicCounterStorage); ok {
+	allowed, remaining, err := atomicStorage.CheckAndSetLeakyBucket(key, lb.limit, windowSeconds)
+	if err != nil {
+	return Result{}, err
+	}
+	if !allowed {
+		retryAfter := time.Duration(float64(time.Second) / leakRate)
+	return Result{Allowed: false, Limit: lb.limit, Remaining: 0, RetryAfter: retryAfter, ResetTime: time.Now().Add(retryAfter)}, nil
+	}
+	return Result{Allowed: true, Limit: lb.limit, Remaining: remaining, RetryAfter: 0, ResetTime: time.Now().Add(time.Duration(windowSeconds) * time.Second)}, nil
+	}
 	record, exists, err := lb.storage.Get(key) // record, exists, err: retrieve existing record from storage for this identity
 	if err != nil {
 		return Result{}, err
 	}
 
-	if exists { // if a record exists for this identity
+	var water float64 // water: current water level
+	if exists && record.WindowStart != 0 { // if record exists and has a valid timestamp
 		elapsed := float64(now - record.WindowStart) // elapsed: seconds since last recorded activity
-		lb.water[key] -= int(leakRate * elapsed) // lb.water[key]: drain water based on elapsed time (leak out)
-		if lb.water[key] < 0 { // if water drops below zero (all leaked)
-			lb.water[key] = 0 // lb.water[key] = 0: clamp to zero (empty bucket)
+		water = float64(record.Count) - leakRate*elapsed // water: drain based on elapsed time
+		if water < 0 { // if water drops below zero
+			water = 0 // water = 0: clamp to zero (empty bucket)
 		}
+	} else { // if no record (new identity)
+		water = 0 // water = 0: start with empty bucket
 	}
 
-	if lb.water[key]+1 > lb.limit { // if adding this request would exceed bucket capacity
-		retryAfter := time.Duration(float64(time.Second) * (float64(lb.water[key]+1-lb.limit) / leakRate)) // retryAfter: time until enough water drains to fit one more request
+	if water+1 > float64(lb.limit) { // if adding this request would exceed bucket capacity
+		retryAfter := time.Duration(float64(time.Second) * (water+1-float64(lb.limit)) / leakRate) // retryAfter: time until enough water drains to fit one more request
 		if retryAfter < 0 { // if retryAfter is negative (overflow edge case), clamp to zero
 			retryAfter = 0 // retryAfter = 0: no wait time
 		}
 		return Result{ // return: deny the request with rate limit info
 			Allowed:    false, // Allowed: request denied (bucket overflow)
 			Limit:      lb.limit, // Limit: the configured bucket capacity
-			Remaining:  lb.limit - lb.water[key], // Remaining: space left in bucket
+			Remaining:  lb.limit - int(water), // Remaining: space left in bucket
 			RetryAfter: retryAfter, // RetryAfter: time until bucket drains enough space
 			ResetTime:  time.Now().Add(retryAfter), // ResetTime: estimated time when request can be processed
 		}, nil // nil: no error
 	}
 
-	lb.water[key]++ // lb.water[key]++: add water for this request (enqueue)
-	lb.storage.Set(key, rate.Record{WindowStart: now, Count: lb.water[key]}) // lb.storage.Set: persist water level to storage
+	newWater := water + 1 // newWater: add water for this request (enqueue)
+	if err := lb.storage.Set(key, rate.Record{WindowStart: now, Count: int(newWater)}); err != nil {
+	return Result{}, err
+	}
 
 	return Result{ // return: allow the request with rate limit info
 		Allowed:    true, // Allowed: request permitted (enqueued)
 		Limit:      lb.limit, // Limit: the configured bucket capacity
-		Remaining:  lb.limit - lb.water[key], // Remaining: space left in bucket after adding request
+		Remaining:  lb.limit - int(newWater), // Remaining: space left in bucket after adding request
 		RetryAfter: 0, // RetryAfter: no wait needed (request allowed)
 		ResetTime:  time.Now().Add(time.Duration(windowSeconds) * time.Second), // ResetTime: estimated window expiration
 	}, nil // nil: no error
@@ -93,26 +107,24 @@ ARCHITECTURAL / ENGINEERING DECISIONS
    - Cons: No burst tolerance (unlike token bucket), water level in-memory only.
    - Best for: Strict rate limiting where consistent processing speed is required (e.g., payment APIs).
 
-2. WATER LEVEL IN-MEMORY (map[string]int)
-   - Water level tracked in-memory (lb.water map), persistent state in storage.
-   - Decision: map provides O(1) water level access; storage provides durability.
-   - Risk: process restart loses water levels. Mitigated by storage recovery on next Check().
-   - Note: the storage only stores Count and WindowStart — the "water" is a derived value computed from elapsed time.
+2. WATER LEVEL COMPUTATION
+   - Water level computed from Redis record.Count minus elapsed-drain.
+   - Decision: removes in-memory water map, ensuring distributed correctness.
+   - Tradeoff: requires computing water level from elapsed time on every request, but consistent across instances.
 
-3. LEAK RATE CALCULATION (leakRate = limit / windowSeconds)
-   - Leak rate derived from policy.Limit divided by window duration.
-   - Decision: leak rate is proportional to the configured limit, ensuring that higher limits have proportionally faster draining.
-   - This ensures the bucket can handle the configured load over the window period.
-
-4. NO INITIAL WATER (new identities)
+3. NO INITIAL WATER (new identities)
    - Decision: new identities start with zero water (empty bucket).
    - Why: fair — no free burst like token bucket. Requests queue up and process at leak rate.
    - Contrast with TokenBucket: token bucket gives full bucket on first request; leaky bucket gives empty bucket.
 
-5. RETRY-AFTER CALCULATION
+4. RETRY-AFTER CALCULATION
    - retryAfter = (water + 1 - limit) / leakRate seconds (time until enough water drains).
    - Decision: calculates exact wait time until there is space for one more request in the bucket.
    - This is more accurate than fixed Retry-After because it accounts for current water level.
+
+5. REDIS AS SOURCE OF TRUTH
+   - Water level is computed from Redis record.Count + elapsed time drain.
+   - Decision: removes in-memory water cache, ensuring distributed correctness.
 
 6. CONSTANT RATE PROCESSING
    - Unlike token bucket, leaky bucket does not allow bursts even if capacity is available.
@@ -120,9 +132,8 @@ ARCHITECTURAL / ENGINEERING DECISIONS
    - Tradeoff: fairness vs responsiveness. Leaky bucket is fairer but less responsive to legitimate bursts.
 
 7. MUTEX LOCKING (sync.Mutex)
-   - Single mutex protects water map and limit field.
-   - Decision: water level updates (read-modify-write) require synchronization.
-   - Storage operations covered by same lock to prevent inconsistent reads.
+   - Single mutex protects limit field.
+   - Decision: no in-memory state to protect. Storage operations are handled by storage layer.
 
 8. DIFFERENCE FROM TOKEN BUCKET
    - Token bucket: allows bursts (up to limit), tokens refill over time. Good for burst-tolerant APIs.

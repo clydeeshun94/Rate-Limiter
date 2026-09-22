@@ -26,10 +26,12 @@ func (w *WrappedLimiter) Check(identity string, policy limiter.Policy) (limiter.
 	duration := time.Since(start)
 
 	w.collector.RecordDuration(duration)
+	if err == nil {
 	if result.Allowed {
-		w.collector.RecordAllowed(identity)
+	w.collector.RecordAllowed(identity)
 	} else {
-		w.collector.RecordDenied(identity)
+	w.collector.RecordDenied(identity)
+	}
 	}
 
 	return result, err

@@ -75,7 +75,9 @@ func (swl *SlidingWindowLog) Check(identity string, policy Policy) (Result, erro
 	record.Timestamps = valid // record.Timestamps: update timestamps in record
 	record.Count = len(valid) // record.Count: update count to match timestamps length
 	record.WindowStart = now // record.WindowStart: update window start to current time
-	swl.storage.Set(key, record) // swl.storage.Set: persist updated record (all timestamps) to storage
+	if err := swl.storage.Set(key, record); err != nil {
+	return Result{}, err
+	}
 
 	return Result{ // return: allow the request with rate limit info
 		Allowed:    true, // Allowed: request permitted (timestamp logged)

@@ -1,6 +1,7 @@
 package metrics // metrics: observability metrics collection for rate limiter
 
 import ( // import: standard library imports
+	"crypto/sha256"
 	"fmt" // fmt: formatting for Prometheus text output
 	"sync" // sync: provides Mutex for thread-safe map access
 	"time" // time: duration type for timing measurements
@@ -25,11 +26,16 @@ func NewCollector() *Collector { // NewCollector: returns pointer to initialized
 	}
 }
 
+func identityHash(identity string) string {
+	sum := sha256.Sum256([]byte(identity))
+	return fmt.Sprintf("bucket_%03d", int(sum[0])<<4|int(sum[1])>>4)
+}
+
 // RecordAllowed increments the allowed request count for an identity. // RecordAllowed: thread-safe increment
 func (c *Collector) RecordAllowed(identity string) { // RecordAllowed: also increments total check count
 	c.mu.Lock() // c.mu.Lock(): acquire lock for safe map write
 	defer c.mu.Unlock() // defer c.mu.Unlock(): release lock after update
-	c.allowedTotal[identity]++ // increment allowed count for this identity
+	c.allowedTotal[identityHash(identity)]++ // store only a safe identity hash
 	c.totalChecks++ // increment total check counter
 }
 
@@ -37,7 +43,7 @@ func (c *Collector) RecordAllowed(identity string) { // RecordAllowed: also incr
 func (c *Collector) RecordDenied(identity string) { // RecordDenied: also increments total check count
 	c.mu.Lock() // c.mu.Lock(): acquire lock for safe map write
 	defer c.mu.Unlock() // defer c.mu.Unlock(): release lock after update
-	c.deniedTotal[identity]++ // increment denied count for this identity
+	c.deniedTotal[identityHash(identity)]++ // store only a safe identity hash
 	c.totalChecks++ // increment total check counter
 }
 
@@ -65,12 +71,24 @@ func (c *Collector) Snapshot() map[string]interface{} { // Snapshot: returns map
 		avgDuration = c.totalDuration / float64(c.totalChecks) // average in seconds
 	}
 
+	allowed := make(map[string]int64, len(c.allowedTotal))
+	for identity, count := range c.allowedTotal {
+		allowed[identity] = count
+	}
+	denied := make(map[string]int64, len(c.deniedTotal))
+	for identity, count := range c.deniedTotal {
+		denied[identity] = count
+	}
+	limits := make(map[string]int, len(c.limits))
+	for algorithm, limit := range c.limits {
+		limits[algorithm] = limit
+	}
 	return map[string]interface{}{ // return: complete snapshot as map
-		"allowed_total":  c.allowedTotal, // allowed_total: per-identity allowed counts
-		"denied_total":   c.deniedTotal,  // denied_total: per-identity denied counts
-		"total_checks":   c.totalChecks,  // total_checks: total check count
-		"avg_duration_s": avgDuration,    // avg_duration_s: mean check duration in seconds
-		"limits":         c.limits,       // limits: current limit per algorithm
+		"allowed_total":  allowed,
+		"denied_total":   denied,
+		"total_checks":   c.totalChecks,
+		"avg_duration_s": avgDuration,
+		"limits":         limits,
 	}
 }
 
@@ -85,14 +103,14 @@ func (c *Collector) ToPrometheusText() string { // ToPrometheusText: builds comp
 	out += "# HELP rate_limiter_requests_allowed Total allowed requests per identity\n" // HELP: metric description
 	out += "# TYPE rate_limiter_requests_allowed counter\n" // TYPE: counter (monotonically increasing)
 	for identity, count := range c.allowedTotal { // identity: each tracked identity; count: allowed count
-		out += fmt.Sprintf("rate_limiter_requests_allowed{identity=\"%s\"} %d\n", identity, count) // format as Prometheus time series
+		out += fmt.Sprintf("rate_limiter_requests_allowed{identity_hash=\"%s\"} %d\n", identity, count) // format as Prometheus time series
 	}
 
 	// Denied requests counter per identity
 	out += "# HELP rate_limiter_requests_denied Total denied requests per identity\n" // HELP: metric description
 	out += "# TYPE rate_limiter_requests_denied counter\n" // TYPE: counter
 	for identity, count := range c.deniedTotal { // identity: each tracked identity; count: denied count
-		out += fmt.Sprintf("rate_limiter_requests_denied{identity=\"%s\"} %d\n", identity, count) // format as Prometheus time series
+		out += fmt.Sprintf("rate_limiter_requests_denied{identity_hash=\"%s\"} %d\n", identity, count) // format as Prometheus time series
 	}
 
 	// Current limit per algorithm (gauge — can go up or down)

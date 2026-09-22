@@ -26,7 +26,7 @@ func NewRedisClusterStorage(addrs []string, password string, db int) *RedisClust
 	}
 }
 
-func (r *RedisClusterStorage) Get(key string) (Record, bool) {
+func (r *RedisClusterStorage) Get(key string) (Record, bool, error) {
 	var record Record
 	var found bool
 	err := r.retry(func() error {
@@ -47,9 +47,9 @@ func (r *RedisClusterStorage) Get(key string) (Record, bool) {
 		return nil
 	})
 	if err != nil {
-		return Record{}, false
+		return Record{}, false, err
 	}
-	return record, found
+	return record, found, nil
 }
 
 func (r *RedisClusterStorage) Set(key string, record Record) error {

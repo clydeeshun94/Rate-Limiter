@@ -309,7 +309,7 @@ func TestAdmin_SetConfig(t *testing.T) {
 	defer server.Close()
 
 	body, _ := json.Marshal(configUpdateRequest{
-		Port:         9090,
+		Port:         8080,
 		DefaultLimit: 250,
 	})
 
@@ -324,8 +324,8 @@ func TestAdmin_SetConfig(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	if svc.config.Port != 9090 {
-		t.Fatalf("port should be 9090, got %d", svc.config.Port)
+	if svc.config.Port != 8080 {
+		t.Fatalf("port should remain 8080, got %d", svc.config.Port)
 	}
 	if svc.config.DefaultLimit != 250 {
 		t.Fatalf("default_limit should be 250, got %d", svc.config.DefaultLimit)

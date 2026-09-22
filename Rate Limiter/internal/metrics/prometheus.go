@@ -1,6 +1,9 @@
 package metrics
 
 import (
+	"crypto/sha256"
+	"fmt"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -16,6 +19,11 @@ type PrometheusCollector struct {
 	checksTotal   prometheus.Counter
 }
 
+func hashIdentity(identity string) string {
+	sum := sha256.Sum256([]byte(identity))
+	return fmt.Sprintf("bucket_%03d", int(sum[0])<<4|int(sum[1])>>4)
+}
+
 // NewPrometheusCollector creates a PrometheusCollector and registers all metrics
 // with the provided registry (or prometheus.DefaultRegistry if nil).
 func NewPrometheusCollector(registry prometheus.Registerer) *PrometheusCollector {
@@ -25,14 +33,14 @@ func NewPrometheusCollector(registry prometheus.Registerer) *PrometheusCollector
 				Name: "rate_limiter_requests_allowed",
 				Help: "Total allowed requests per identity",
 			},
-			[]string{"identity"},
+			[]string{"identity_hash"},
 		),
 		deniedTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "rate_limiter_requests_denied",
 				Help: "Total denied requests per identity",
 			},
-			[]string{"identity"},
+			[]string{"identity_hash"},
 		),
 		currentLimit: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{

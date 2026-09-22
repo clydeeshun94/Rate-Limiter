@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,9 +13,32 @@ import (
 )
 
 var wsUpgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
+	ReadBufferSize: 1024,
 	WriteBufferSize: 1024,
-	CheckOrigin:     func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+	return true
+	}
+
+	configured := strings.TrimSpace(os.Getenv("RATE_LIMITER_ALLOWED_ORIGINS"))
+	if configured == "" {
+	// With no explicit list, allow only the server's own origin.
+		scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return origin == scheme+"://"+r.Host
+	}
+
+	for _, candidate := range strings.Split(configured, ",") {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "*" || candidate == origin {
+	return true
+	}
+	}
+	return false
+	},
 }
 
 type wsClient struct {

@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -16,10 +17,10 @@ func TestCollector_RecordAllowed(t *testing.T) {
 	c.RecordAllowed("bob")
 
 	text := c.ToPrometheusText()
-	if !strings.Contains(text, "rate_limiter_requests_allowed{identity=\"alice\"} 2") {
+	if !strings.Contains(text, fmt.Sprintf("rate_limiter_requests_allowed{identity_hash=\"%s\"} 2", identityHash("alice"))) {
 		t.Fatal("expected alice allowed count = 2")
 	}
-	if !strings.Contains(text, "rate_limiter_requests_allowed{identity=\"bob\"} 1") {
+	if !strings.Contains(text, fmt.Sprintf("rate_limiter_requests_allowed{identity_hash=\"%s\"} 1", identityHash("bob"))) {
 		t.Fatal("expected bob allowed count = 1")
 	}
 }
@@ -31,7 +32,7 @@ func TestCollector_RecordDenied(t *testing.T) {
 	c.RecordDenied("bob")
 
 	text := c.ToPrometheusText()
-	if !strings.Contains(text, "rate_limiter_requests_denied{identity=\"alice\"} 2") {
+	if !strings.Contains(text, fmt.Sprintf("rate_limiter_requests_denied{identity_hash=\"%s\"} 2", identityHash("alice"))) {
 		t.Fatal("expected alice denied count = 2")
 	}
 }
@@ -88,8 +89,8 @@ func TestWrap_CheckRecordsMetrics(t *testing.T) {
 		t.Fatal("expected allowed")
 	}
 
-	if c.allowedTotal["alice"] != 1 {
-		t.Fatalf("expected alice allowed = 1, got %d", c.allowedTotal["alice"])
+	if c.allowedTotal[identityHash("alice")] != 1 {
+		t.Fatalf("expected alice allowed = 1, got %d", c.allowedTotal[identityHash("alice")])
 	}
 }
 
@@ -108,8 +109,8 @@ func TestWrap_CheckRecordsDenied(t *testing.T) {
 		t.Fatal("expected denied")
 	}
 
-	if c.deniedTotal["alice"] != 1 {
-		t.Fatalf("expected alice denied = 1, got %d", c.deniedTotal["alice"])
+	if c.deniedTotal[identityHash("alice")] != 1 {
+		t.Fatalf("expected alice denied = 1, got %d", c.deniedTotal[identityHash("alice")])
 	}
 }
 

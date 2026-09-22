@@ -3,6 +3,7 @@ package storage // storage: Redis-backed storage implementation for rate limiter
 import ( // import: standard library and Redis client imports
 	"context" // context: for cancellation and timeouts on Redis operations
 	"encoding/json" // json: serialize/deserialize Record structs to/from Redis values
+	"fmt"
 	"time" // time: durations for TTL and retry delays
 
 	"github.com/go-redis/redis/v8" // redis: official Go Redis client
@@ -90,34 +91,84 @@ func (r *RedisStorage) Set(key string, record Record) error { // Set: JSON marsh
 // Uses a Lua script for atomicity in Redis. Returns (allowed, currentCount, error).
 func (r *RedisStorage) CheckAndSet(key string, limit int, windowStart int64, windowSeconds int64) (bool, int, error) {
 	script := `
-		local data = redis.call('GET', KEYS[1])
-		local record
-		if data then
-			record = cjson.decode(data)
-		else
-			record = {WindowStart = "0", Count = 0}
-		end
-		if tostring(record.WindowStart) ~= tostring(ARGV[3]) then
-			record.WindowStart = tonumber(ARGV[3])
-			record.Count = 0
-		end
-		if record.Count >= tonumber(ARGV[2]) then
-			return {0, record.Count}
-		end
-		record.Count = record.Count + 1
-		redis.call('SET', KEYS[1], cjson.encode(record), 'EX', tonumber(ARGV[4]))
-		return {1, record.Count}
+	local data = redis.call('GET', KEYS[1])
+	local record
+	if data then
+		record = cjson.decode(data)
+	else
+		record = {WindowStart = tonumber(ARGV[2]), Count = 0}
+	end
+	if tonumber(record.WindowStart) ~= tonumber(ARGV[2]) then
+		record.WindowStart = tonumber(ARGV[2])
+		record.Count = 0
+	end
+	if tonumber(record.Count) >= tonumber(ARGV[1]) then
+	return {0, tonumber(record.Count)}
+	end
+		record.Count = tonumber(record.Count) + 1
+	redis.call('SET', KEYS[1], cjson.encode(record), 'EX', tonumber(ARGV[3]))
+	return {1, record.Count}
 	`
-	result, err := r.client.Eval(r.ctx, script, []string{key}, limit, windowStart, windowStart, windowSeconds).Result()
+	var result interface{}
+	err := r.retry(func() error {
+	var err error
+	result, err = r.client.Eval(r.ctx, script, []string{key}, limit, windowStart, windowSeconds).Result()
+	return err
+	})
 	if err != nil {
-		return false, 0, err
+	return false, 0, err
 	}
+	return parseAtomicResult(result, "fixed-window")
+}
+
+	// CheckAndSetCount atomically applies the sliding-window counter algorithm.
+	func (r *RedisStorage) CheckAndSetCount(key string, limit int, windowStart int64, windowSeconds int64) (bool, int, error) {
+		script := `
+		local data = redis.call('GET', KEYS[1])
+		local current = 0
+		local now = tonumber(ARGV[4])
+		if data then
+		local record = cjson.decode(data)
+		local storedStart = tonumber(record.WindowStart)
+		local storedCount = tonumber(record.Count) or 0
+		if storedStart == tonumber(ARGV[2]) then
+		current = storedCount
+		elseif storedStart == tonumber(ARGV[2]) - tonumber(ARGV[3]) then
+		local ratio = (now - storedStart) / tonumber(ARGV[3])
+		if ratio < 0 then ratio = 0 end
+		if ratio > 1 then ratio = 1 end
+		current = math.floor(storedCount * (1 - ratio))
+		end
+		end
+		if current >= tonumber(ARGV[1]) then
+		return {0, current}
+		end
+		current = current + 1
+		redis.call('SET', KEYS[1], cjson.encode({WindowStart = tonumber(ARGV[2]), Count = current}), 'EX', tonumber(ARGV[3]) * 2)
+		return {1, current}
+		`
+		var result interface{}
+		err := r.retry(func() error {
+		var err error
+		result, err = r.client.Eval(r.ctx, script, []string{key}, limit, windowStart, windowSeconds, time.Now().Unix()).Result()
+		return err
+		})
+		if err != nil {
+		return false, 0, err
+		}
+		return parseAtomicResult(result, "sliding-window")
+	}
+
+func parseAtomicResult(result interface{}, name string) (bool, int, error) {
 	resp, ok := result.([]interface{})
 	if !ok || len(resp) < 2 {
-		return false, 0, nil
+	return false, 0, fmt.Errorf("unexpected Redis %s response", name)
 	}
-	allowed, _ := resp[0].(int64)
-	count, _ := resp[1].(int64)
+	allowed, okAllowed := resp[0].(int64)
+	count, okCount := resp[1].(int64)
+	if !okAllowed || !okCount {
+	return false, 0, fmt.Errorf("invalid Redis %s response", name)
+	}
 	return allowed == 1, int(count), nil
 }
 
