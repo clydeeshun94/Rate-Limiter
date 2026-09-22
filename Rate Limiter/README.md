@@ -35,6 +35,14 @@ func main() {
 | **Token Bucket** | Burst-friendly, network traffic | Complex implementation | Yes |
 | **Leaky Bucket** | Smooth request flow (constant rate) | Rejects before filling | Yes |
 
+### Storage Selection
+| Backend | Best For | Concurrency Scope | Persistence | Distributed Atomicity |
+|---------|----------|-------------------|-------------|-----------------------|
+| **MemoryStorage** | Local development and single-process tests | One process | Lost on restart | No; use only with one limiter instance/process |
+| **RedisStorage** | Production and multiple service instances | Shared across instances | Redis-backed with TTL | Yes for Fixed Window, Sliding Window Counter, Token Bucket, and Leaky Bucket via Lua scripts |
+
+Use `MemoryStorage` when low latency and test isolation matter. Use `RedisStorage` when several service instances must enforce one shared limit. The Redis sliding-window counter remains an approximation because it linearly blends the previous window; Redis makes that calculation atomic and distributed, but does not make it exact. Use Sliding Window Log when exact request timestamps are required, accepting its higher storage and processing cost.
+
 **Choose Fixed Window** for simple per-period limits (e.g., 100 requests/minute).
 **Choose Sliding Window Counter** for smoother counting without boundary bursts.
 **Choose Sliding Window Log** for exact request history (audit trails, analytics).
@@ -86,19 +94,21 @@ Send `algorithm` in the `/check` request body:
 {
   "identity": "user-123",
   "algorithm": "fixed_window",
-  "policy": {
+    "policy": {
     "limit": 100,
-    "window_seconds": 60
+    "window": 60000000
   }
 }
 ```
 
 **Supported algorithms:** `fixed_window`, `sliding_window_counter`, `sliding_window_log`, `token_bucket`, `leaky_bucket`
 
+`window` is decoded as a Go `time.Duration`, so JSON values use nanoseconds (`60000000` = 60 seconds). The request `limit` is enforced by the active server configuration; clients cannot raise it through `/check`.
+
 ### Redis Configuration
 
 ```go
-storage := rate.NewRedisStorage("localhost:6379", "password", 0)
+storage := rate.NewRedisStorage("localhost:6379", "password", 0, 5*time.Minute)
 l := limiter.NewFixedWindowWithLimit(storage, 100)
 ```
 
@@ -117,6 +127,29 @@ config := adjuster.AdjusterConfig{
 
 ---
 
+## Security
+
+### Admin Endpoints
+
+The following endpoints require admin authentication. Set `RLIMITER_AUTH_TOKEN` to enable:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/admin/disable` | POST | Disable rate limiting (engage protection off) |
+| `/admin/enable` | POST | Enable rate limiting (engage protection on) |
+| `/crash` | POST | Trigger escalating barrage attack against target |
+| `/limit` | POST | Update limit for an algorithm |
+| `/limits` | GET | List all limits |
+| `/config` | POST | Update server configuration |
+
+When `RLIMITER_AUTH_TOKEN` is set, requests must include `Authorization: Bearer <token>` header. Without it, endpoints return `401 Unauthorized`.
+
+### WebSocket Origin Check
+
+`/ws/metrics` validates the `Origin` header. When `RATE_LIMITER_ALLOWED_ORIGINS` is not set, only the server's own origin is allowed. Set it to a comma-separated list of allowed origins (or `*` for open) to permit cross-origin connections.
+
+---
+
 ## HTTP API
 
 Start the service: `./rate-limiter` (listens on `:8080`)
@@ -130,7 +163,7 @@ Check if a request is allowed.
 {
   "identity": "alice",
   "algorithm": "fixed_window",
-  "policy": { "limit": 10, "window_seconds": 60 }
+  "policy": { "limit": 10, "window": 60000000 }
 }
 ```
 
@@ -180,6 +213,32 @@ Health check for load balancers.
 { "status": "ok" }
 ```
 
+### POST /crash
+
+Stress test a target service by firing an escalating barrage of concurrent POST requests. The barrage starts at 50 concurrent requests for 5 seconds, then doubles concurrency each round (up to 800) with a 3-second pause between rounds, until the target stops responding.
+
+**Request (query params):**
+| Param | Default | Description |
+|-------|---------|-------------|
+| `url` | `http://localhost:5175/api/shorten` | Target URL to attack |
+| `concurrent` | `50` | Initial concurrency |
+| `duration` | `5s` | Burst duration per round |
+
+**Response:**
+```json
+{
+  "status": "complete",
+  "total_requests": 12450,
+  "errors": 312,
+  "rounds": [
+    { "round": 1, "concurrent": 50, "total_requests": 8200, "errors": 200, "target_alive": true },
+    { "round": 2, "concurrent": 100, "total_requests": 3800, "errors": 112, "target_alive": false }
+  ]
+}
+```
+
+Requires admin auth when `RLIMITER_AUTH_TOKEN` is set.
+
 ---
 
 ## Metrics / Prometheus
@@ -190,7 +249,7 @@ Example output:
 ```
 # HELP rate_limiter_requests_allowed Total allowed requests per identity
 # TYPE rate_limiter_requests_allowed counter
-rate_limiter_requests_allowed{identity="alice"} 42
+rate_limiter_requests_allowed{identity_hash="bucket_123"} 42
 # HELP rate_limiter_current_limit Current limit per algorithm
 # TYPE rate_limiter_current_limit gauge
 rate_limiter_current_limit{algorithm="fixed_window"} 100

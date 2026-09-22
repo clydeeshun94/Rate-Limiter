@@ -177,6 +177,10 @@ func (s *service) handleCheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("unknown algorithm: %s", req.Algorithm), http.StatusBadRequest)
 	return
 	}
+	if err := policy.Validate(configuredLimit, req.Policy.Window); err != nil {
+		http.Error(w, fmt.Sprintf("invalid policy: %v", err), http.StatusBadRequest)
+	return
+	}
 
 	req.Policy.Limit = configuredLimit
 	if atomic.LoadInt32(&s.enabled) == 0 {
@@ -502,11 +506,11 @@ func (s *service) handleCrash(w http.ResponseWriter, r *http.Request) {
 	checkTimeout := 3 * time.Second
 
 	type roundResult struct {
-		round          int `json:"round"`
-		concurrent     int `json:"concurrent"`
-		totalRequests  int64 `json:"total_requests"`
-		errors         int64 `json:"errors"`
-		targetAlive    bool `json:"target_alive"`
+	Round         int   `json:"round"`
+	Concurrent    int   `json:"concurrent"`
+	TotalRequests int64 `json:"total_requests"`
+	Errors        int64 `json:"errors"`
+	TargetAlive   bool  `json:"target_alive"`
 	}
 
 	var results []roundResult
@@ -555,12 +559,12 @@ func (s *service) handleCrash(w http.ResponseWriter, r *http.Request) {
 		targetURL.Path = "health"
 		alive := s.isTargetAlive(targetURL.String(), checkTimeout)
 
-		results = append(results, roundResult{
-			round:         round,
-			concurrent:    concurrent,
-			totalRequests: total,
-			errors:        errs,
-			targetAlive:   alive,
+			results = append(results, roundResult{
+		Round:         round,
+		Concurrent:    concurrent,
+		TotalRequests: total,
+		Errors:        errs,
+		TargetAlive:   alive,
 		})
 		totalAll += total
 		errorsAll += errs

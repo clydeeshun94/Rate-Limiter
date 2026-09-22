@@ -128,19 +128,25 @@ ARCHITECTURAL / ENGINEERING DECISIONS
    - Why: avoids unbounded memory growth from storing counts for many historical windows.
 
 3. MUTEX LOCKING (sync.Mutex)
-   - Same strategy as FixedWindow: single mutex protects limit and storage.
-   - Decision: the Check() operation is a simple Get + Compare + Set, very fast. No need for complex concurrency patterns.
+   - The mutex protects the configured limit.
+   - Memory storage uses a local Get + Compare + Set sequence, so shared enforcement across processes requires Redis.
+   - Redis executes the blend and increment inside one Lua script, preventing concurrent instances from losing updates.
 
 4. STORAGE ABSTRACTION
    - Storage injected via interface (rate.Storage), same as FixedWindow.
    - Decision: consistent abstraction across all algorithms. Each algorithm only cares about Record{WindowStart, Count}, not storage implementation.
 
-5. LINEAR DECAY ASSUMPTION
+5. REDIS WINDOW-BLENDING TRADEOFF
+   - Redis applies the same linear interpolation as the memory implementation, but atomically calculates the blended count and records the increment.
+   - This preserves distributed correctness without making the algorithm exact: the result still assumes requests were uniformly distributed in the previous window.
+   - A Redis key receives a short TTL covering the active and immediately previous window, which bounds stale state while preserving the blend during a boundary transition.
+
+6. LINEAR DECAY ASSUMPTION
    - The ratio calculation assumes requests are uniformly distributed across the window.
    - Decision: this is a reasonable approximation for most use cases. More accurate approaches (sliding window log) store timestamps at higher memory cost.
    - Tradeoff: accuracy vs memory. Sliding window counter chooses low memory with acceptable accuracy.
 
-6. DIFFERENCE FROM FIXED WINDOW
+7. DIFFERENCE FROM FIXED WINDOW
    - Fixed window resets count at window boundary (hard reset).
    - Sliding window counter DECAYS count gradually across boundaries (smooth reset).
    - This eliminates the "burst at boundary" problem of fixed windows.
