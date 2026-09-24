@@ -4,27 +4,29 @@ import ( // import: standard library imports
 	"sync" // sync: provides Mutex for thread-safe access
 	"time" // time: provides time-related functions for window calculations
 
+	pol "rate-limiter/internal/policy"   // pol: policy validation package
 	rate "rate-limiter/internal/storage" // rate: import storage package as rate for Record type
-	pol "rate-limiter/internal/policy" // pol: policy validation package
 )
 
 type SlidingWindowLog struct { // SlidingWindowLog: sliding window log rate limiter implementation (most accurate, stores all timestamps)
 	storage rate.Storage // storage: persistent storage for rate records
 	limit   int          // limit: maximum requests allowed per window
-	mu      sync.Mutex  // mu: mutex for thread-safe access to limit field
+	mu      sync.Mutex   // mu: mutex for thread-safe access to limit field
+	clock   Clock
 }
 
 func NewSlidingWindowLogWithLimit(storage rate.Storage, limit int) *SlidingWindowLog { // NewSlidingWindowLogWithLimit: constructor, creates a new SlidingWindowLog with given storage and limit
 	return &SlidingWindowLog{ // return: return pointer to new SlidingWindowLog instance
 		storage: storage, // storage: assign storage implementation
 		limit:   limit,   // limit: assign request limit per window
+		clock:   RealClock{},
 	}
 }
 
 func (swl *SlidingWindowLog) SetLimit(limit int) { // SetLimit: updates the rate limit dynamically (thread-safe)
-	swl.mu.Lock() // swl.mu.Lock(): acquire lock to protect limit field from concurrent writes
+	swl.mu.Lock()         // swl.mu.Lock(): acquire lock to protect limit field from concurrent writes
 	defer swl.mu.Unlock() // defer swl.mu.Unlock(): ensure lock is released when function exits
-	swl.limit = limit // swl.limit = limit: update the rate limit value
+	swl.limit = limit     // swl.limit = limit: update the rate limit value
 }
 
 func (swl *SlidingWindowLog) Check(identity string, policy Policy) (Result, error) { // Check: main method to check if a request is allowed for the given identity using sliding window log
@@ -32,14 +34,14 @@ func (swl *SlidingWindowLog) Check(identity string, policy Policy) (Result, erro
 		return Result{}, err
 	}
 
-	swl.mu.Lock() // swl.mu.Lock(): acquire lock to protect limit reads and storage operations
+	swl.mu.Lock()         // swl.mu.Lock(): acquire lock to protect limit reads and storage operations
 	defer swl.mu.Unlock() // defer swl.mu.Unlock(): ensure lock is released after check completes
 
-	now := time.Now().Unix() // now: current Unix timestamp in seconds
+	now := swl.clock.Now().Unix()                   // now: current Unix timestamp in seconds
 	windowSeconds := int64(policy.Window.Seconds()) // windowSeconds: duration of the sliding window in seconds
-	cutoff := now - windowSeconds // cutoff: oldest timestamp that is still within the window (everything before cutoff is expired)
+	cutoff := now - windowSeconds                   // cutoff: oldest timestamp that is still within the window (everything before cutoff is expired)
 
-	key := identity // key: use identity string as the storage key
+	key := identity                             // key: use identity string as the storage key
 	record, exists, err := swl.storage.Get(key) // record, exists, err: retrieve existing record from storage for this identity
 	if err != nil {
 		return Result{}, err
@@ -49,7 +51,7 @@ func (swl *SlidingWindowLog) Check(identity string, policy Policy) (Result, erro
 		record = rate.Record{WindowStart: now, Timestamps: []int64{}} // record: create new empty record with current window start
 	}
 
-	var valid []int64 // valid: slice to hold timestamps that fall within the current window
+	var valid []int64                      // valid: slice to hold timestamps that fall within the current window
 	for _, ts := range record.Timestamps { // iterate over all stored timestamps for this identity
 		if ts >= cutoff { // if timestamp is within the current window (not expired)
 			valid = append(valid, ts) // valid: keep this timestamp (still valid)
@@ -57,33 +59,33 @@ func (swl *SlidingWindowLog) Check(identity string, policy Policy) (Result, erro
 	}
 
 	if len(valid) >= swl.limit { // if valid request count has reached or exceeded the limit
-		oldest := valid[0] // oldest: earliest valid timestamp in the window
+		oldest := valid[0]                                                  // oldest: earliest valid timestamp in the window
 		retryAfter := time.Duration(oldest+windowSeconds-now) * time.Second // retryAfter: time until the oldest request expires and space opens up
-		if retryAfter < 0 { // if retryAfter is negative (edge case with clock skew), clamp to zero
+		if retryAfter < 0 {                                                 // if retryAfter is negative (edge case with clock skew), clamp to zero
 			retryAfter = 0 // retryAfter = 0: no wait time
 		}
 		return Result{ // return: deny the request with rate limit info
-			Allowed:    false, // Allowed: request denied (window full)
-			Limit:      swl.limit, // Limit: the configured limit
-			Remaining:  swl.limit - len(valid), // Remaining: slots left before hitting limit
-			RetryAfter: retryAfter, // RetryAfter: time until oldest request expires
+			Allowed:    false,                              // Allowed: request denied (window full)
+			Limit:      swl.limit,                          // Limit: the configured limit
+			Remaining:  swl.limit - len(valid),             // Remaining: slots left before hitting limit
+			RetryAfter: retryAfter,                         // RetryAfter: time until oldest request expires
 			ResetTime:  time.Unix(oldest+windowSeconds, 0), // ResetTime: when the oldest request exits the window
 		}, nil // nil: no error
 	}
 
 	valid = append(valid, now) // valid: add current request timestamp to the log
-	record.Timestamps = valid // record.Timestamps: update timestamps in record
-	record.Count = len(valid) // record.Count: update count to match timestamps length
-	record.WindowStart = now // record.WindowStart: update window start to current time
+	record.Timestamps = valid  // record.Timestamps: update timestamps in record
+	record.Count = len(valid)  // record.Count: update count to match timestamps length
+	record.WindowStart = now   // record.WindowStart: update window start to current time
 	if err := swl.storage.Set(key, record); err != nil {
-	return Result{}, err
+		return Result{}, err
 	}
 
 	return Result{ // return: allow the request with rate limit info
-		Allowed:    true, // Allowed: request permitted (timestamp logged)
-		Limit:      swl.limit, // Limit: the configured limit
-		Remaining:  swl.limit - len(valid), // Remaining: slots remaining in window
-		RetryAfter: 0, // RetryAfter: no wait needed (request allowed)
+		Allowed:    true,                            // Allowed: request permitted (timestamp logged)
+		Limit:      swl.limit,                       // Limit: the configured limit
+		Remaining:  swl.limit - len(valid),          // Remaining: slots remaining in window
+		RetryAfter: 0,                               // RetryAfter: no wait needed (request allowed)
 		ResetTime:  time.Unix(now+windowSeconds, 0), // ResetTime: end of current window
 	}, nil // nil: no error
 }

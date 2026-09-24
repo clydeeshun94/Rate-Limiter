@@ -4,20 +4,22 @@ import ( // import: standard library imports
 	"sync" // sync: provides Mutex for thread-safe access
 	"time" // time: provides time-related functions for window calculations
 
+	pol "rate-limiter/internal/policy"   // pol: policy validation package
 	rate "rate-limiter/internal/storage" // rate: import storage package as rate for Record type
-	pol "rate-limiter/internal/policy" // pol: policy validation package
 )
 
 type FixedWindow struct { // FixedWindow: fixed window rate limiter implementation
 	storage rate.Storage // storage: persistent storage for rate records
 	limit   int          // limit: maximum requests allowed per window
-	mu      sync.Mutex  // mu: mutex for thread-safe access to limit field
+	mu      sync.Mutex   // mu: mutex for thread-safe access to limit field
+	clock   Clock
 }
 
 func NewFixedWindowWithLimit(storage rate.Storage, limit int) *FixedWindow { // NewFixedWindowWithLimit: constructor, creates a new FixedWindow with given storage and limit
 	return &FixedWindow{ // return: return pointer to new FixedWindow instance
 		storage: storage, // storage: assign storage implementation
 		limit:   limit,   // limit: assign request limit per window
+		clock:   RealClock{},
 	}
 }
 
@@ -30,9 +32,9 @@ func maxRemaining(limit, count int) int {
 }
 
 func (fw *FixedWindow) SetLimit(limit int) { // SetLimit: updates the rate limit dynamically (thread-safe)
-	fw.mu.Lock() // fw.mu.Lock(): acquire lock to protect limit field from concurrent writes
+	fw.mu.Lock()         // fw.mu.Lock(): acquire lock to protect limit field from concurrent writes
 	defer fw.mu.Unlock() // defer fw.mu.Unlock(): ensure lock is released when function exits
-	fw.limit = limit // fw.limit = limit: update the rate limit value
+	fw.limit = limit     // fw.limit = limit: update the rate limit value
 }
 
 func (fw *FixedWindow) Check(identity string, policy Policy) (Result, error) { // Check: main method to check if a request is allowed for the given identity
@@ -40,10 +42,10 @@ func (fw *FixedWindow) Check(identity string, policy Policy) (Result, error) { /
 		return Result{}, err
 	}
 
-	fw.mu.Lock() // fw.mu.Lock(): acquire lock to protect limit reads and storage operations
+	fw.mu.Lock()         // fw.mu.Lock(): acquire lock to protect limit reads and storage operations
 	defer fw.mu.Unlock() // defer fw.mu.Unlock(): ensure lock is released after check completes
 
-	now := time.Now().Unix() // now: current Unix timestamp in seconds
+	now := fw.clock.Now().Unix()                                // now: current Unix timestamp in seconds
 	windowStart := now - (now % int64(policy.Window.Seconds())) // windowStart: start of the current time window (truncate to window boundary)
 
 	key := identity // key: use identity string as the storage key (e.g., "create:alice")
@@ -55,23 +57,23 @@ func (fw *FixedWindow) Check(identity string, policy Policy) (Result, error) { /
 			return Result{}, err
 		}
 		resetTime := time.Unix(windowStart+windowSeconds, 0)
-			if !allowed {
+		if !allowed {
 			retryAfter := time.Until(resetTime)
-		if retryAfter < 0 {
-			retryAfter = 0
-		}
-		return Result{
-		Allowed:    false,
-		Limit:      fw.limit,
-		Remaining:  maxRemaining(fw.limit, count),
-		RetryAfter: retryAfter,
-		ResetTime:  resetTime,
-		}, nil
+			if retryAfter < 0 {
+				retryAfter = 0
+			}
+			return Result{
+				Allowed:    false,
+				Limit:      fw.limit,
+				Remaining:  maxRemaining(fw.limit, count),
+				RetryAfter: retryAfter,
+				ResetTime:  resetTime,
+			}, nil
 		}
 		return Result{
 			Allowed:    true,
 			Limit:      fw.limit,
-				Remaining:  maxRemaining(fw.limit, count),
+			Remaining:  maxRemaining(fw.limit, count),
 			RetryAfter: 0,
 			ResetTime:  resetTime,
 		}, nil
@@ -85,38 +87,38 @@ func (fw *FixedWindow) Check(identity string, policy Policy) (Result, error) { /
 	if !exists || record.WindowStart != windowStart { // if no record exists OR window has rolled over to a new period
 		record = rate.Record{ // record: create a fresh record for the new window
 			WindowStart: windowStart, // WindowStart: set window start timestamp
-			Count:       0, // Count: reset count to zero for new window
+			Count:       0,           // Count: reset count to zero for new window
 		}
 	}
 
 	if record.Count >= fw.limit { // if request count has reached or exceeded the limit
 		resetTime := time.Unix(windowStart+int64(policy.Window.Seconds()), 0) // resetTime: when the current window resets (next window start)
-		retryAfter := time.Until(resetTime) // retryAfter: duration until reset (for Retry-After header)
-		if retryAfter < 0 { // if retryAfter is negative (clock skew or past reset), clamp to zero
+		retryAfter := time.Until(resetTime)                                   // retryAfter: duration until reset (for Retry-After header)
+		if retryAfter < 0 {                                                   // if retryAfter is negative (clock skew or past reset), clamp to zero
 			retryAfter = 0 // retryAfter = 0: no wait time
 		}
 		return Result{ // return: deny the request with rate limit info
-			Allowed:    false, // Allowed: request denied
-			Limit:      fw.limit, // Limit: the configured limit
+			Allowed:    false,                                // Allowed: request denied
+			Limit:      fw.limit,                             // Limit: the configured limit
 			Remaining:  maxRemaining(fw.limit, record.Count), // Remaining: how many requests remain this window
-			RetryAfter: retryAfter, // RetryAfter: seconds until window resets
-			ResetTime:  resetTime, // ResetTime: when the window resets
+			RetryAfter: retryAfter,                           // RetryAfter: seconds until window resets
+			ResetTime:  resetTime,                            // ResetTime: when the window resets
 		}, nil // nil: no error
 	}
 
 	record.Count++ // record.Count++: increment request count (allow the request)
 	if err := fw.storage.Set(key, record); err != nil {
-	return Result{}, err
+		return Result{}, err
 	}
 
 	resetTime := time.Unix(windowStart+int64(policy.Window.Seconds()), 0) // resetTime: calculate when the current window resets
 
 	return Result{ // return: allow the request with rate limit info
-		Allowed:    true, // Allowed: request permitted
-		Limit:      fw.limit, // Limit: the configured limit
+		Allowed:    true,                    // Allowed: request permitted
+		Limit:      fw.limit,                // Limit: the configured limit
 		Remaining:  fw.limit - record.Count, // Remaining: remaining requests in current window
-		RetryAfter: 0, // RetryAfter: no wait needed (request allowed)
-		ResetTime:  resetTime, // ResetTime: when the window resets
+		RetryAfter: 0,                       // RetryAfter: no wait needed (request allowed)
+		ResetTime:  resetTime,               // ResetTime: when the window resets
 	}, nil // nil: no error
 }
 
@@ -159,4 +161,3 @@ ARCHITECTURAL / ENGINEERING DECISIONS
    - The Check() method holds the mutex for its entire duration.
    - Decision: the operation is a simple Get + Compare + Set, which is very fast (microseconds). Holding the lock for the entire operation avoids race conditions without needing more complex patterns like CAS or optimistic locking.
 */
-
