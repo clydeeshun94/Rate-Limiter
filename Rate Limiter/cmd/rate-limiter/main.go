@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"rate-limiter/internal/policy"
+	"rate-limiter/internal/identity"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -42,11 +43,14 @@ type service struct {
 	monitorLimiter limiter.RateLimiter
 	enabled   int32
 	wsHub     *wsHub
+	identityResolver identity.Resolver
+	maxBodyBytes int64
 }
 
 type checkRequest struct {
-	Identity   string         `json:"identity"`
+	Identity   string         `json:"identity"` // legacy/test-only when no resolver is configured
 	Algorithm  string         `json:"algorithm"`
+	Resource   string         `json:"resource"`
 	Policy     limiter.Policy `json:"policy"`
 }
 
@@ -102,6 +106,7 @@ func newService() *service {
 		config:    cfg,
 		enabled:   1,
 		wsHub:     newWSHub(collector),
+	maxBodyBytes: 16 << 10,
 	}
 
 	storage := rate.NewMemoryStorage()
@@ -163,10 +168,26 @@ func (s *service) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxBodyBytes)
 	var req checkRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
-		return
+	return
+	}
+	identityValue := req.Identity
+	if s.identityResolver != nil {
+	resolved, err := s.identityResolver.Resolve(r)
+	if err != nil || resolved.Primary == "" {
+		http.Error(w, "identity could not be resolved", http.StatusUnauthorized)
+	return
+	}
+	identityValue = resolved.Primary
+	}
+	if err := limiter.ValidateIdentity(identityValue, 256); err != nil {
+		http.Error(w, "invalid identity", http.StatusBadRequest)
+	return
 	}
 
 	s.mu.RLock()
@@ -184,7 +205,7 @@ func (s *service) handleCheck(w http.ResponseWriter, r *http.Request) {
 
 	req.Policy.Limit = configuredLimit
 	if atomic.LoadInt32(&s.enabled) == 0 {
-		s.collector.RecordAllowed(req.Identity)
+		s.collector.RecordAllowed(identityValue)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(checkResponse{
 			Allowed:   true,
@@ -203,7 +224,7 @@ func (s *service) handleCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	ch := make(chan checkResult, 1)
 	go func() {
-		res, err := l.Check(req.Identity, req.Policy)
+		res, err := l.Check(identityValue, req.Policy)
 		ch <- checkResult{result: res, err: err}
 	}()
 

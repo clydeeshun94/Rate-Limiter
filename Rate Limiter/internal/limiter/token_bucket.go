@@ -4,27 +4,29 @@ import ( // import: standard library imports
 	"sync" // sync: provides Mutex for thread-safe access
 	"time" // time: provides time-related functions for window calculations
 
+	pol "rate-limiter/internal/policy"   // pol: policy validation package
 	rate "rate-limiter/internal/storage" // rate: import storage package as rate for Record type
-	pol "rate-limiter/internal/policy" // pol: policy validation package
 )
 
 type TokenBucket struct { // TokenBucket: token bucket rate limiter implementation
 	storage rate.Storage // storage: persistent storage for rate records
 	limit   int          // limit: maximum tokens (burst capacity) allowed
-	mu      sync.Mutex  // mu: mutex for thread-safe access to limit field
+	mu      sync.Mutex   // mu: mutex for thread-safe access to limit field
+	clock   Clock
 }
 
 func NewTokenBucketWithLimit(storage rate.Storage, limit int) *TokenBucket { // NewTokenBucketWithLimit: constructor, creates a new TokenBucket with given storage and limit
 	return &TokenBucket{ // return: return pointer to new TokenBucket instance
 		storage: storage, // storage: assign storage implementation
 		limit:   limit,   // limit: assign max tokens per window
+		clock:   RealClock{},
 	}
 }
 
 func (tb *TokenBucket) SetLimit(limit int) { // SetLimit: updates the rate limit dynamically (thread-safe)
-	tb.mu.Lock() // tb.mu.Lock(): acquire lock to protect limit field
+	tb.mu.Lock()         // tb.mu.Lock(): acquire lock to protect limit field
 	defer tb.mu.Unlock() // defer tb.mu.Unlock(): ensure lock is released when function exits
-	tb.limit = limit // tb.limit = limit: update the token capacity
+	tb.limit = limit     // tb.limit = limit: update the token capacity
 }
 
 func (tb *TokenBucket) Check(identity string, policy Policy) (Result, error) { // Check: main method to check if a request is allowed for the given identity using token bucket algorithm
@@ -32,65 +34,65 @@ func (tb *TokenBucket) Check(identity string, policy Policy) (Result, error) { /
 		return Result{}, err
 	}
 
-	tb.mu.Lock() // tb.mu.Lock(): acquire lock to protect limit reads and storage operations
+	tb.mu.Lock()         // tb.mu.Lock(): acquire lock to protect limit reads and storage operations
 	defer tb.mu.Unlock() // defer tb.mu.Unlock(): ensure lock is released after check completes
 
-	now := time.Now().Unix() // now: current Unix timestamp in seconds
-	windowSeconds := int64(policy.Window.Seconds()) // windowSeconds: token refill period in seconds
+	now := tb.clock.Now().Unix()                             // now: current Unix timestamp in seconds
+	windowSeconds := int64(policy.Window.Seconds())          // windowSeconds: token refill period in seconds
 	refillRate := float64(tb.limit) / float64(windowSeconds) // refillRate: tokens added per second (linear refill)
 
 	key := identity // key: use identity string as the token bucket key
 	if atomicStorage, ok := tb.storage.(rate.AtomicCounterStorage); ok {
-	allowed, remaining, err := atomicStorage.CheckAndSetTokenBucket(key, tb.limit, windowSeconds)
-	if err != nil {
-	return Result{}, err
-	}
-	if !allowed {
-		retryAfter := time.Duration(float64(time.Second) / refillRate)
-	return Result{Allowed: false, Limit: tb.limit, Remaining: 0, RetryAfter: retryAfter, ResetTime: time.Now().Add(retryAfter)}, nil
-	}
-	return Result{Allowed: true, Limit: tb.limit, Remaining: remaining, RetryAfter: 0, ResetTime: time.Now().Add(time.Duration(windowSeconds) * time.Second)}, nil
+		allowed, remaining, err := atomicStorage.CheckAndSetTokenBucket(key, tb.limit, windowSeconds)
+		if err != nil {
+			return Result{}, err
+		}
+		if !allowed {
+			retryAfter := time.Duration(float64(time.Second) / refillRate)
+			return Result{Allowed: false, Limit: tb.limit, Remaining: 0, RetryAfter: retryAfter, ResetTime: tb.clock.Now().Add(retryAfter)}, nil
+		}
+		return Result{Allowed: true, Limit: tb.limit, Remaining: remaining, RetryAfter: 0, ResetTime: tb.clock.Now().Add(time.Duration(windowSeconds) * time.Second)}, nil
 	}
 	record, exists, err := tb.storage.Get(key) // record, exists, err: retrieve existing record from storage for this identity
 	if err != nil {
 		return Result{}, err
 	}
 
-	var tokens int // tokens: current token balance
+	var tokens int                         // tokens: current token balance
 	if exists && record.WindowStart != 0 { // if record exists and has a valid timestamp (not a new record)
-		elapsed := float64(now - record.WindowStart) // elapsed: seconds since last recorded activity
+		elapsed := float64(now - record.WindowStart)    // elapsed: seconds since last recorded activity
 		tokens = record.Count + int(refillRate*elapsed) // tokens: refill based on elapsed time
-		if tokens > tb.limit { // if refilled tokens exceed capacity
+		if tokens > tb.limit {                          // if refilled tokens exceed capacity
 			tokens = tb.limit // tokens = tb.limit: cap at maximum (burst limit)
 		}
 	} else if !exists { // if no record exists for this identity (first request)
 		tokens = tb.limit // tokens = tb.limit: start with full bucket (initial capacity)
 	}
 
-	tokens-- // tokens--: consume one token for this request
+	tokens--        // tokens--: consume one token for this request
 	if tokens < 0 { // if no tokens available (request exceeds capacity)
-		tokens = 0 // tokens = 0: clamp to zero
+		tokens = 0                                                             // tokens = 0: clamp to zero
 		retryAfter := time.Duration((1.0 / refillRate) * float64(time.Second)) // retryAfter: time to wait for one token to refill (1/refillRate seconds)
-		resetTime := time.Now().Add(retryAfter) // resetTime: when the next token will be available
-		return Result{ // return: deny the request with rate limit info
-			Allowed:    false, // Allowed: request denied (no tokens)
-			Limit:      tb.limit, // Limit: the configured token capacity
-			Remaining:  0, // Remaining: no tokens left
+		resetTime := tb.clock.Now().Add(retryAfter)                            // resetTime: when the next token will be available
+		return Result{                                                         // return: deny the request with rate limit info
+			Allowed:    false,      // Allowed: request denied (no tokens)
+			Limit:      tb.limit,   // Limit: the configured token capacity
+			Remaining:  0,          // Remaining: no tokens left
 			RetryAfter: retryAfter, // RetryAfter: time until next token available
-			ResetTime:  resetTime, // ResetTime: estimated time of next token refill
+			ResetTime:  resetTime,  // ResetTime: estimated time of next token refill
 		}, nil // nil: no error
 	}
 
 	if err := tb.storage.Set(key, rate.Record{WindowStart: now, Count: tokens}); err != nil {
-	return Result{}, err
+		return Result{}, err
 	}
 
 	return Result{ // return: allow the request with rate limit info
-		Allowed:    true, // Allowed: request permitted (token consumed)
-		Limit:      tb.limit, // Limit: the configured token capacity
-		Remaining:  tokens, // Remaining: tokens left in bucket after consumption
-		RetryAfter: 0, // RetryAfter: no wait needed (request allowed)
-		ResetTime:  time.Now().Add(time.Duration(windowSeconds) * time.Second), // ResetTime: estimated window expiration
+		Allowed:    true,                                                           // Allowed: request permitted (token consumed)
+		Limit:      tb.limit,                                                       // Limit: the configured token capacity
+		Remaining:  tokens,                                                         // Remaining: tokens left in bucket after consumption
+		RetryAfter: 0,                                                              // RetryAfter: no wait needed (request allowed)
+		ResetTime:  tb.clock.Now().Add(time.Duration(windowSeconds) * time.Second), // ResetTime: estimated window expiration
 	}, nil // nil: no error
 }
 

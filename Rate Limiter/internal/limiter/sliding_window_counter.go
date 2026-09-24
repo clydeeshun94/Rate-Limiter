@@ -4,27 +4,29 @@ import ( // import: standard library imports
 	"sync" // sync: provides Mutex for thread-safe access
 	"time" // time: provides time-related functions for window calculations
 
+	pol "rate-limiter/internal/policy"   // pol: policy validation package
 	rate "rate-limiter/internal/storage" // rate: import storage package as rate for Record type
-	pol "rate-limiter/internal/policy" // pol: policy validation package
 )
 
 type SlidingWindowCounter struct { // SlidingWindowCounter: sliding window counter rate limiter implementation
 	storage rate.Storage // storage: persistent storage for rate records
 	limit   int          // limit: maximum requests allowed per window
-	mu      sync.Mutex  // mu: mutex for thread-safe access to limit field
+	mu      sync.Mutex   // mu: mutex for thread-safe access to limit field
+	clock   Clock
 }
 
 func NewSlidingWindowCounterWithLimit(storage rate.Storage, limit int) *SlidingWindowCounter { // NewSlidingWindowCounterWithLimit: constructor, creates a new SlidingWindowCounter with given storage and limit
 	return &SlidingWindowCounter{ // return: return pointer to new SlidingWindowCounter instance
 		storage: storage, // storage: assign storage implementation
 		limit:   limit,   // limit: assign request limit per window
+		clock:   RealClock{},
 	}
 }
 
 func (sw *SlidingWindowCounter) SetLimit(limit int) { // SetLimit: updates the rate limit dynamically (thread-safe)
-	sw.mu.Lock() // sw.mu.Lock(): acquire lock to protect limit field from concurrent writes
+	sw.mu.Lock()         // sw.mu.Lock(): acquire lock to protect limit field from concurrent writes
 	defer sw.mu.Unlock() // defer sw.mu.Unlock(): ensure lock is released when function exits
-	sw.limit = limit // sw.limit = limit: update the rate limit value
+	sw.limit = limit     // sw.limit = limit: update the rate limit value
 }
 
 func (sw *SlidingWindowCounter) Check(identity string, policy Policy) (Result, error) { // Check: main method to check if a request is allowed for the given identity using sliding window counter
@@ -32,46 +34,46 @@ func (sw *SlidingWindowCounter) Check(identity string, policy Policy) (Result, e
 		return Result{}, err
 	}
 
-	sw.mu.Lock() // sw.mu.Lock(): acquire lock to protect limit reads and storage operations
+	sw.mu.Lock()         // sw.mu.Lock(): acquire lock to protect limit reads and storage operations
 	defer sw.mu.Unlock() // defer sw.mu.Unlock(): ensure lock is released after check completes
 
-	now := time.Now() // now: current time
-	nowUnix := now.Unix() // nowUnix: current Unix timestamp in seconds
-	windowSeconds := int64(policy.Window.Seconds()) // windowSeconds: duration of the rate limit window in seconds
+	now := sw.clock.Now()                              // now: current time
+	nowUnix := now.Unix()                              // nowUnix: current Unix timestamp in seconds
+	windowSeconds := int64(policy.Window.Seconds())    // windowSeconds: duration of the rate limit window in seconds
 	windowStart := nowUnix - (nowUnix % windowSeconds) // windowStart: start of the current time window (truncate to window boundary)
-	prevWindowStart := windowStart - windowSeconds // prevWindowStart: start of the previous time window
+	prevWindowStart := windowStart - windowSeconds     // prevWindowStart: start of the previous time window
 
 	key := identity // key: use identity string as the storage key (e.g., "create:alice")
 	if redisStorage, ok := sw.storage.(*rate.RedisStorage); ok {
-	allowed, count, err := redisStorage.CheckAndSetCount(key, sw.limit, windowStart, windowSeconds)
-	if err != nil {
-	return Result{}, err
-	}
-	resetTime := time.Unix(windowStart+windowSeconds, 0)
-	if allowed {
-	return Result{Allowed: true, Limit: sw.limit, Remaining: maxRemaining(sw.limit, count), ResetTime: resetTime}, nil
-	}
+		allowed, count, err := redisStorage.CheckAndSetCount(key, sw.limit, windowStart, windowSeconds)
+		if err != nil {
+			return Result{}, err
+		}
+		resetTime := time.Unix(windowStart+windowSeconds, 0)
+		if allowed {
+			return Result{Allowed: true, Limit: sw.limit, Remaining: maxRemaining(sw.limit, count), ResetTime: resetTime}, nil
+		}
 		retryAfter := time.Until(resetTime)
-	if retryAfter < 0 {
-		retryAfter = 0
-	}
-	return Result{Allowed: false, Limit: sw.limit, Remaining: maxRemaining(sw.limit, count), RetryAfter: retryAfter, ResetTime: resetTime}, nil
+		if retryAfter < 0 {
+			retryAfter = 0
+		}
+		return Result{Allowed: false, Limit: sw.limit, Remaining: maxRemaining(sw.limit, count), RetryAfter: retryAfter, ResetTime: resetTime}, nil
 	}
 
 	record, exists, err := sw.storage.Get(key) // record, exists, err: retrieve existing record from storage for this identity
 	if err != nil {
-	return Result{}, err
+		return Result{}, err
 	}
 
 	var currentCount int // currentCount: number of requests in the current window, calculated by blending windows
-	if !exists { // if no record exists for this identity
+	if !exists {         // if no record exists for this identity
 		currentCount = 0 // currentCount = 0: no previous requests, start fresh
 	} else if record.WindowStart == windowStart { // if record is from the current window
 		currentCount = record.Count // currentCount = record.Count: use stored count directly (same window)
 	} else if record.WindowStart == prevWindowStart { // if record is from the previous window (transition period)
 		ratio := float64(nowUnix-prevWindowStart) / float64(windowSeconds) // ratio: fraction of the previous window that has elapsed (0.0 to 1.0)
-		currentCount = int(float64(record.Count) * (1.0 - ratio)) // currentCount: decay previous count by the elapsed ratio (weighted blend between windows)
-		if currentCount < 0 { // if calculation results in negative (shouldn't happen, but safety check)
+		currentCount = int(float64(record.Count) * (1.0 - ratio))          // currentCount: decay previous count by the elapsed ratio (weighted blend between windows)
+		if currentCount < 0 {                                              // if calculation results in negative (shouldn't happen, but safety check)
 			currentCount = 0 // currentCount = 0: clamp to zero
 		}
 	} else { // if record is from an older window (more than one window ago)
@@ -80,31 +82,31 @@ func (sw *SlidingWindowCounter) Check(identity string, policy Policy) (Result, e
 
 	if currentCount >= sw.limit { // if current request count has reached or exceeded the limit
 		resetTime := time.Unix(windowStart+windowSeconds, 0) // resetTime: when the current window resets (next window start)
-		retryAfter := time.Until(resetTime) // retryAfter: duration until reset (for Retry-After header)
-		if retryAfter < 0 { // if retryAfter is negative (clock skew or past reset), clamp to zero
+		retryAfter := time.Until(resetTime)                  // retryAfter: duration until reset (for Retry-After header)
+		if retryAfter < 0 {                                  // if retryAfter is negative (clock skew or past reset), clamp to zero
 			retryAfter = 0 // retryAfter = 0: no wait time
 		}
 		return Result{ // return: deny the request with rate limit info
-			Allowed:    false, // Allowed: request denied
-			Limit:      sw.limit, // Limit: the configured limit
+			Allowed:    false,                                // Allowed: request denied
+			Limit:      sw.limit,                             // Limit: the configured limit
 			Remaining:  maxRemaining(sw.limit, currentCount), // Remaining: how many requests are left in current window
-			RetryAfter: retryAfter, // RetryAfter: seconds until window resets
-			ResetTime:  resetTime, // ResetTime: when the window resets
+			RetryAfter: retryAfter,                           // RetryAfter: seconds until window resets
+			ResetTime:  resetTime,                            // ResetTime: when the window resets
 		}, nil // nil: no error
 	}
 
 	currentCount++ // currentCount++: increment request count (allow the request)
 	if err := sw.storage.Set(key, rate.Record{WindowStart: windowStart, Count: currentCount}); err != nil {
-	return Result{}, err
+		return Result{}, err
 	}
 
 	resetTime := time.Unix(windowStart+windowSeconds, 0) // resetTime: calculate when the current window resets
-	return Result{ // return: allow the request with rate limit info
-		Allowed:    true, // Allowed: request permitted
-		Limit:      sw.limit, // Limit: the configured limit
+	return Result{                                       // return: allow the request with rate limit info
+		Allowed:    true,                                 // Allowed: request permitted
+		Limit:      sw.limit,                             // Limit: the configured limit
 		Remaining:  maxRemaining(sw.limit, currentCount), // Remaining: remaining requests in current window
-		RetryAfter: 0, // RetryAfter: no wait needed (request allowed)
-		ResetTime:  resetTime, // ResetTime: when the window resets
+		RetryAfter: 0,                                    // RetryAfter: no wait needed (request allowed)
+		ResetTime:  resetTime,                            // ResetTime: when the window resets
 	}, nil // nil: no error
 }
 

@@ -4,27 +4,29 @@ import ( // import: standard library imports
 	"sync" // sync: provides Mutex for thread-safe access
 	"time" // time: provides time-related functions for window calculations
 
+	pol "rate-limiter/internal/policy"   // pol: policy validation package
 	rate "rate-limiter/internal/storage" // rate: import storage package as rate for Record type
-	pol "rate-limiter/internal/policy" // pol: policy validation package
 )
 
 type LeakyBucket struct { // LeakyBucket: leaky bucket rate limiter implementation (processes requests at a constant rate)
 	storage rate.Storage // storage: persistent storage for rate records
 	limit   int          // limit: maximum water level (request queue capacity)
-	mu      sync.Mutex  // mu: mutex for thread-safe access to limit field
+	mu      sync.Mutex   // mu: mutex for thread-safe access to limit field
+	clock   Clock
 }
 
 func NewLeakyBucketWithLimit(storage rate.Storage, limit int) *LeakyBucket { // NewLeakyBucketWithLimit: constructor, creates a new LeakyBucket with given storage and limit
 	return &LeakyBucket{ // return: return pointer to new LeakyBucket instance
 		storage: storage, // storage: assign storage implementation
 		limit:   limit,   // limit: assign max water level (queue capacity)
+		clock:   RealClock{},
 	}
 }
 
 func (lb *LeakyBucket) SetLimit(limit int) { // SetLimit: updates the rate limit dynamically (thread-safe)
-	lb.mu.Lock() // lb.mu.Lock(): acquire lock to protect limit field
+	lb.mu.Lock()         // lb.mu.Lock(): acquire lock to protect limit field
 	defer lb.mu.Unlock() // defer lb.mu.Unlock(): ensure lock is released when function exits
-	lb.limit = limit // lb.limit = limit: update the water capacity
+	lb.limit = limit     // lb.limit = limit: update the water capacity
 }
 
 func (lb *LeakyBucket) Check(identity string, policy Policy) (Result, error) { // Check: main method to check if a request is allowed for the given identity using leaky bucket algorithm
@@ -32,35 +34,35 @@ func (lb *LeakyBucket) Check(identity string, policy Policy) (Result, error) { /
 		return Result{}, err
 	}
 
-	lb.mu.Lock() // lb.mu.Lock(): acquire lock to protect limit reads and storage operations
+	lb.mu.Lock()         // lb.mu.Lock(): acquire lock to protect limit reads and storage operations
 	defer lb.mu.Unlock() // defer lb.mu.Unlock(): ensure lock is released after check completes
 
-	now := time.Now().Unix() // now: current Unix timestamp in seconds
-	windowSeconds := int64(policy.Window.Seconds()) // windowSeconds: time window for leak rate calculation
+	now := lb.clock.Now().Unix()                               // now: current Unix timestamp in seconds
+	windowSeconds := int64(policy.Window.Seconds())            // windowSeconds: time window for leak rate calculation
 	leakRate := float64(policy.Limit) / float64(windowSeconds) // leakRate: requests drained per second (constant outflow rate)
 
 	key := identity // key: use identity string as the bucket key
 	if atomicStorage, ok := lb.storage.(rate.AtomicCounterStorage); ok {
-	allowed, remaining, err := atomicStorage.CheckAndSetLeakyBucket(key, lb.limit, windowSeconds)
-	if err != nil {
-	return Result{}, err
-	}
-	if !allowed {
-		retryAfter := time.Duration(float64(time.Second) / leakRate)
-	return Result{Allowed: false, Limit: lb.limit, Remaining: 0, RetryAfter: retryAfter, ResetTime: time.Now().Add(retryAfter)}, nil
-	}
-	return Result{Allowed: true, Limit: lb.limit, Remaining: remaining, RetryAfter: 0, ResetTime: time.Now().Add(time.Duration(windowSeconds) * time.Second)}, nil
+		allowed, remaining, err := atomicStorage.CheckAndSetLeakyBucket(key, lb.limit, windowSeconds)
+		if err != nil {
+			return Result{}, err
+		}
+		if !allowed {
+			retryAfter := time.Duration(float64(time.Second) / leakRate)
+			return Result{Allowed: false, Limit: lb.limit, Remaining: 0, RetryAfter: retryAfter, ResetTime: lb.clock.Now().Add(retryAfter)}, nil
+		}
+		return Result{Allowed: true, Limit: lb.limit, Remaining: remaining, RetryAfter: 0, ResetTime: lb.clock.Now().Add(time.Duration(windowSeconds) * time.Second)}, nil
 	}
 	record, exists, err := lb.storage.Get(key) // record, exists, err: retrieve existing record from storage for this identity
 	if err != nil {
 		return Result{}, err
 	}
 
-	var water float64 // water: current water level
+	var water float64                      // water: current water level
 	if exists && record.WindowStart != 0 { // if record exists and has a valid timestamp
-		elapsed := float64(now - record.WindowStart) // elapsed: seconds since last recorded activity
+		elapsed := float64(now - record.WindowStart)     // elapsed: seconds since last recorded activity
 		water = float64(record.Count) - leakRate*elapsed // water: drain based on elapsed time
-		if water < 0 { // if water drops below zero
+		if water < 0 {                                   // if water drops below zero
 			water = 0 // water = 0: clamp to zero (empty bucket)
 		}
 	} else { // if no record (new identity)
@@ -68,30 +70,30 @@ func (lb *LeakyBucket) Check(identity string, policy Policy) (Result, error) { /
 	}
 
 	if water+1 > float64(lb.limit) { // if adding this request would exceed bucket capacity
-		retryAfter := time.Duration(float64(time.Second) * (water+1-float64(lb.limit)) / leakRate) // retryAfter: time until enough water drains to fit one more request
-		if retryAfter < 0 { // if retryAfter is negative (overflow edge case), clamp to zero
+		retryAfter := time.Duration(float64(time.Second) * (water + 1 - float64(lb.limit)) / leakRate) // retryAfter: time until enough water drains to fit one more request
+		if retryAfter < 0 {                                                                            // if retryAfter is negative (overflow edge case), clamp to zero
 			retryAfter = 0 // retryAfter = 0: no wait time
 		}
 		return Result{ // return: deny the request with rate limit info
-			Allowed:    false, // Allowed: request denied (bucket overflow)
-			Limit:      lb.limit, // Limit: the configured bucket capacity
-			Remaining:  lb.limit - int(water), // Remaining: space left in bucket
-			RetryAfter: retryAfter, // RetryAfter: time until bucket drains enough space
-			ResetTime:  time.Now().Add(retryAfter), // ResetTime: estimated time when request can be processed
+			Allowed:    false,                          // Allowed: request denied (bucket overflow)
+			Limit:      lb.limit,                       // Limit: the configured bucket capacity
+			Remaining:  lb.limit - int(water),          // Remaining: space left in bucket
+			RetryAfter: retryAfter,                     // RetryAfter: time until bucket drains enough space
+			ResetTime:  lb.clock.Now().Add(retryAfter), // ResetTime: estimated time when request can be processed
 		}, nil // nil: no error
 	}
 
 	newWater := water + 1 // newWater: add water for this request (enqueue)
 	if err := lb.storage.Set(key, rate.Record{WindowStart: now, Count: int(newWater)}); err != nil {
-	return Result{}, err
+		return Result{}, err
 	}
 
 	return Result{ // return: allow the request with rate limit info
-		Allowed:    true, // Allowed: request permitted (enqueued)
-		Limit:      lb.limit, // Limit: the configured bucket capacity
-		Remaining:  lb.limit - int(newWater), // Remaining: space left in bucket after adding request
-		RetryAfter: 0, // RetryAfter: no wait needed (request allowed)
-		ResetTime:  time.Now().Add(time.Duration(windowSeconds) * time.Second), // ResetTime: estimated window expiration
+		Allowed:    true,                                                           // Allowed: request permitted (enqueued)
+		Limit:      lb.limit,                                                       // Limit: the configured bucket capacity
+		Remaining:  lb.limit - int(newWater),                                       // Remaining: space left in bucket after adding request
+		RetryAfter: 0,                                                              // RetryAfter: no wait needed (request allowed)
+		ResetTime:  lb.clock.Now().Add(time.Duration(windowSeconds) * time.Second), // ResetTime: estimated window expiration
 	}, nil // nil: no error
 }
 
